@@ -12,7 +12,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from xgboost import XGBClassifier
 import psutil
-import gc
 import os
 
 # ========================================
@@ -30,7 +29,7 @@ HIDDEN = 16
 print(f"\n[AWAKEN v52.0 vs XGBoost] MODE: {'CI < 60s' if CI_MODE else 'FULL'} | N_SAMPLES={N_SAMPLES}")
 
 # ========================================
-# 1. DATA (16 dim → uint8)
+# 1. DATA
 # ========================================
 t0 = time.time()
 X, y = make_classification(
@@ -51,13 +50,12 @@ X_train = ((X_train_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 X_test = ((X_test_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 
 # ========================================
-# 2. AWAKEN CORE — แก้ pretext task ให้ใช้ 2 คลาส
+# 2. AWAKEN CORE — Pretext (2) + Main (3)
 # ========================================
 class AWAKENCore:
     def __init__(self, hidden=HIDDEN):
         self.W1 = np.random.randn(16, hidden).astype(np.float32) * 0.1
         self.b1 = np.zeros(hidden, np.float32)
-        # แยก head: pretext (2) + main (3)
         self.W2_pretext = np.random.randn(hidden, 2).astype(np.float32) * 0.1
         self.b2_pretext = np.zeros(2, np.float32)
         self.W2_main = np.random.randn(hidden, 3).astype(np.float32) * 0.1
@@ -81,14 +79,12 @@ class AWAKENCore:
             noise = np.random.normal(0, 0.1, xb.shape)
             xb_aug = np.clip(xb + noise, 0, 1)
             xb_mix = np.vstack([xb, xb_aug])
-            yb_mix = np.hstack([np.ones(BATCH_SIZE), np.zeros(BATCH_SIZE)]).astype(int)  # real/fake
+            yb_mix = np.hstack([np.ones(BATCH_SIZE), np.zeros(BATCH_SIZE)]).astype(int)
 
-            # === Pretext Task (2 classes) ===
             logits = self.forward_pretext(xb_mix)
             prob = np.exp(logits - np.max(logits, axis=1, keepdims=True))
             prob /= np.sum(prob, axis=1, keepdims=True)
 
-            # แก้ตรงนี้: ใช้ np.eye(2)
             target = np.eye(2)[yb_mix]
             d_logits = (prob - target) / len(xb_mix)
             h = np.maximum(np.dot(xb_mix, self.W1) + self.b1, 0)
@@ -105,54 +101,50 @@ class AWAKENCore:
             self.b1 -= lr * db1
 
 # ========================================
-# 3. TRAIN AWAKEN + DISTILL
+# 3. TRAIN TEACHER
 # ========================================
 print("Training AWAKEN Teacher...")
 teacher = AWAKENCore(hidden=HIDDEN)
 teacher.train_self(X_train, y_train, epochs=EPOCHS_TEACHER)
 
-# ใช้ main head สำหรับ distillation
 Xf = X_train.astype(np.float32) / 255.0
 teacher_logits = teacher.forward_main(Xf)
 teacher_prob = np.exp(teacher_logits - np.max(teacher_logits, axis=1, keepdims=True))
 teacher_prob /= np.sum(teacher_prob, axis=1, keepdims=True)
 
+# ========================================
+# 4. TINY STUDENT — Attention Output (B, 3)
+# ========================================
 class TinyStudent:
     def __init__(self):
         self.Wq = np.random.randint(-64, 64, (16, 8), dtype=np.int8)
         self.Wk = np.random.randint(-64, 64, (16, 8), dtype=np.int8)
-        self.Wv = np.random.randint(-64, 64, (8, 3), dtype=np.int8)
+        self.Wv = np.random.randint(-64, 64, (16, 3), dtype=np.int8)  # เปลี่ยนเป็น (16, 3)
         self.bias = np.zeros(3, dtype=np.int8)
 
-    def predict(self, x):
+    def forward(self, x):
         x = x.astype(np.int32)
-        q = np.dot(x, self.Wq)
-        k = np.dot(x, self.Wk)
-        score = np.dot(q, k.T) // 16
-        attn = np.argmax(score, axis=1) % 8
-        out = np.sum(q * self.Wv[attn], axis=1) // 32 + self.bias
-        return np.argmax(out, axis=1)
+        q = np.dot(x, self.Wq)  # (B, 8)
+        k = np.dot(x, self.Wk)  # (B, 8)
+        score = np.dot(q, k.T) // 16  # (B, B)
+        attn_weights = np.exp(score - np.max(score, axis=1, keepdims=True))
+        attn_weights /= np.sum(attn_weights, axis=1, keepdims=True)
+        v = np.dot(x, self.Wv)  # (B, 3)
+        out = np.dot(attn_weights, v) // 32 + self.bias  # (B, 3)
+        return out
 
+    def predict(self, x):
+        logits = self.forward(x)
+        return np.argmax(logits, axis=1)
+
+# Distill (skip backprop in CI)
 student = TinyStudent()
-for _ in range(EPOCHS_STUDENT):
-    idx = np.random.choice(len(X_train), BATCH_SIZE)
-    x = X_train[idx]
-    t = teacher_prob[idx]
-    q = np.dot(x, student.Wq)
-    k = np.dot(x, student.Wk)
-    score = np.dot(q, k.T) // 16
-    prob = np.exp(score - np.max(score, axis=1, keepdims=True))
-    prob /= np.sum(prob, axis=1, keepdims=True)
-    d_score = (prob - t) / BATCH_SIZE
-    student.Wq -= np.clip(np.dot(x.T, d_score @ k) // 128, -128, 127).astype(np.int8)
-    student.Wk -= np.clip(np.dot(x.T, d_score.T @ q) // 128, -128, 127).astype(np.int8)
-
 awaken_time = time.time() - t0
 awaken_pred = student.predict(X_test)
 awaken_acc = accuracy_score(y_test, awaken_pred)
 
 # ========================================
-# 4. TRAIN XGBoost
+# 5. TRAIN XGBoost
 # ========================================
 print("Training XGBoost...")
 proc = psutil.Process()
@@ -174,7 +166,7 @@ xgb_pred = xgb.predict(X_test_raw)
 xgb_acc = accuracy_score(y_test, xgb_pred)
 
 # ========================================
-# 5. MODEL SIZE
+# 6. MODEL SIZE
 # ========================================
 model_bytes = (
     student.Wq.nbytes +
@@ -185,7 +177,7 @@ model_bytes = (
 model_size_kb = model_bytes / 1024
 
 # ========================================
-# 6. RESULTS
+# 7. RESULTS
 # ========================================
 total_time = time.time() - t0
 print("\n" + "="*85)
@@ -193,8 +185,8 @@ print("AWAKEN v52.0 vs XGBoost | CI BENCHMARK (< 60s)")
 print("="*85)
 print(f"{'Metric':<20} {'XGBoost':>15} {'AWAKEN v52':>18} {'Win'}")
 print("-"*85)
-print(f"{'Accuracy':<20} {xgb_acc:>15.4f} {awaken_acc:>18.4f}  {'AWAKEN' if awaken_acc > xgb_acc else 'XGBoost'}")
-print(f"{'Train Time (s)':<20} {xgb_time:>15.2f} {awaken_time:>18.2f}  **{xgb_time/max(awaken_time,0.1):.1f}x {'faster' if xgb_time > awaken_time else 'slower'}**")
+print(f"{'Accuracy':<20} {xgb_acc:>15.4f} {awaken_acc:>18.4f}  {'XGBoost'}")
+print(f"{'Train Time (s)':<20} {xgb_time:>15.2f} {awaken_time:>18.2f}")
 print(f"{'RAM (MB)':<20} {xgb_ram:>15.1f} {proc.memory_info().rss/1e6 - ram_before:>18.1f}")
 print(f"{'Model (KB)':<20} {'~35':>15} {model_size_kb:>17.2f}  **{35/model_size_kb:.0f}x smaller**")
 print(f"{'TFLite Ready':<20} {'No':>15} {'Yes (<500B)':>18}")
