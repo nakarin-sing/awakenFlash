@@ -1,5 +1,5 @@
-numpy
-numba
-scikit-learn
-xgboost
-psutil
+numpy>=1.25.0
+numba>=0.58.0
+psutil>=5.9.0
+scikit-learn>=1.3.0
+xgboost>=1.7.0
