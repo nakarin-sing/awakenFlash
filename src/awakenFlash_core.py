@@ -1,164 +1,138 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash core — train + infer functions (INT8)
+awakenFlash core — train + infer functions (INT8) [v2.0: Max Speed Inference]
 """
 
 import numpy as np
 from numba import njit, prange
 
 # --------------------------
-# Global Config (UPDATED FOR SPEED VALIDATION N_F=40)
+# Global Config (Unchanged from v1.8)
 # --------------------------
-N_SAMPLES = 100_000 # 100k samples for better training
-N_FEATURES = 40     # Target for speed re-validation
-N_CLASSES = 3       # 3 classes (เพื่อให้เหมือน benchmark v1.5)
-B = 1024
-H = 448             # Hidden layer size, adjusted for N_SAMPLES
+N_SAMPLES = 100_000 
+N_FEATURES = 40     
+N_CLASSES = 3       
+H = 448            
 CONF_THRESHOLD = 80
-LS = 0.006          # Label Smoothing factor (0.6% noise)
+LS = 0.006          
 
 # --------------------------
-# Core Train Function (FIXED LOGIC)
+# Core Train Function (unchanged logic from v1.8, now with LUT_EXP usage)
 # --------------------------
-@njit(parallel=True, fastmath=True, cache=True)
-def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD, LS):
+# LUT_EXP ที่ถูกกำหนดไว้ใน Benchmark (แต่ควรอยู่ใน Core) ถูกจำลองไว้ใน Train_step 
+# เพื่อให้ Logic ถูกต้อง
+
+# จำลอง LUT_EXP ที่ถูกส่งเข้ามา (ใน benchmark มีการกำหนดไว้)
+# NOTE: โค้ดที่รันจริงจะต้องมี lut_exp ถูกส่งเข้ามาใน train_step ด้วย
+# แต่เพื่อให้โค้ดนี้รันได้ใน Numba Standalone จะต้องมีการกำหนดค่าตายตัว
+lut_exp = np.ascontiguousarray(np.array([ 1,1,1,1,1,2,2,2,2,3,3,3,4,4,5,6,7,8,9,10, 
+ 11,13,15,17,19,22,25,28,32,36,41,46,52,59,67,76, 
+ 86,97,110,124,140,158,179,202,228,255 ] + [255]*88, np.uint8)[:128], dtype=np.int64)
+
+@njit(parallel=True, fastmath=True, nogil=True, cache=True)
+def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, B, H, CONF_THRESHOLD, LS, lut_exp):
     n = X_i8.shape[0]
-    num_classes = len(b2)
-
-    # Note: เราไม่มี lut_exp ใน core file นี้ เราจะใช้ค่า d แทน exp(d) ใน Backprop
-    for i in prange(n):
-        x = X_i8[i]
-        target = y[i]
-        h = np.zeros(H, np.int64)
-        
-        # Forward Pass - Layer 1 (W1 * X)
-        for j in range(H):
-            acc = b1[j]
-            for k in range(indptr[j], indptr[j+1]):
-                acc += x[col_indices[k]] * values[k]
-            h[j] = max(acc >> 5, 0) # ReLU Approximation
+    num_classes = 3 # N_CLASSES
+    n_batch = (n + B - 1) // B
+    
+    for i in prange(n_batch):
+        start = i * B
+        end = min(start + B, n)
+        if start >= n: break
             
-        # Forward Pass - Layer 2 (W2 * H) -> Logits
-        logits = b2.copy()
-        for j in range(H):
-            if h[j]:
-                for c in range(num_classes):
-                    logits[c] += h[j] * W2[j, c]
+        # Batching Logic in Train Step
+        xb, yb = X_i8[start:end], y[start:end]
+        ns = xb.shape[0]
         
-        # Softmax / Confidence Approximation (ใช้ค่า d แทน e^d)
-        min_l = logits.min()
-        sum_d = 0 # ใช้ sum_d แทน sum_e 
-        max_l = logits[0]
-        for c in range(num_classes):
-            d = min(127, max(0, (logits[c] - min_l) >> 1))
-            sum_d += d
-            if logits[c] > max_l:
-                max_l = logits[c]
-        conf = (max_l * 100) // max(sum_d, 1)
-        pred = np.argmax(logits)
-        
-        # Early Exit / Target Label
-        if conf < CONF_THRESHOLD:
-            final_target = target
-        else:
-            final_target = pred
+        for s in range(ns):
+            x = xb[s]; h = np.zeros(H, np.int64)
             
-        # Target Label Smoothing
-        tgt = np.zeros(num_classes, np.int64)
-        tgt[final_target] = 127
-        tgt = ((1 - LS) * tgt + LS * 127 // num_classes).astype(np.int64)
-        
-        # Probability Vector (ใช้ค่า d แทน e^d)
-        prob = np.zeros(num_classes, np.int64)
-        sum_d_norm = 0
-        for c in range(num_classes):
-            # BUG FIX: ใน core เดิมใช้ min_l ผิดพลาด เราจะใช้ d_value ที่ถูก scale แล้ว
-            d_value = min(127, max(0, (logits[c] - min_l) >> 1))
-            prob[c] = d_value
-            sum_d_norm += d_value # sum_d_norm
-            
-        # Normalization
-        prob = (prob * 127) // max(sum_d_norm, 1)
-        
-        # Error Signal (dL) - FIXED SCALING
-        # เราใช้ dL = prob - tgt โดยไม่หาร 127/ns เหมือน v1.4/v1.5
-        dL = np.clip(prob - tgt, -5, 5) 
-        
-        # Backpropagation Update
-        for c in range(num_classes):
-            # Update b2 and W2
-            db = dL[c] // 20 # Fixed Learning Rate scaling
-            b2[c] -= db
+            # Layer 1
+            for j in range(H):
+                acc = b1[j]; p, q = indptr[j], indptr[j+1]
+                for k in range(p, q):
+                    acc += x[col_indices[k]] * values[k]
+                h[j] = max(acc >> 5, 0)
+                
+            # Layer 2
+            logits = b2.copy()
             for j in range(H):
                 if h[j]:
-                    W2[j, c] -= (h[j] * db) // 127
-                    
-        for j in range(H):
-            # Update b1 and W1
-            dh = 0
+                    for c in range(num_classes):
+                        logits[c] += h[j] * W2[j, c]
+                        
+            # Confidence Check (ใช้ LUT_EXP)
+            min_l = logits.min(); sum_e = 0; max_l = logits[0]
             for c in range(num_classes):
-                if h[j]:
-                    dh += dL[c] * W2[j, c]
-            db1 = dh // 20 # Fixed Learning Rate scaling
-            b1[j] -= db1
-            for k in range(indptr[j], indptr[j+1]):
-                values[k] -= (x[col_indices[k]] * db1) // 127
-                
+                d = min(127, max(0, (logits[c] - min_l) >> 1))
+                e = lut_exp[d]; sum_e += e
+                if logits[c] > max_l: max_l = logits[c]
+            
+            conf = (max_l * 100) // max(sum_e, 1)
+            pred = np.argmax(logits)
+            
+            # Label Smoothing & Early Exit Target
+            target = yb[s] if conf < CONF_THRESHOLD else pred
+            tgt = np.zeros(num_classes, np.int64); tgt[target] = 127
+            tgt = ((1 - LS) * tgt + LS * 127 // num_classes).astype(np.int64)
+            
+            # Probability Vector
+            prob = np.zeros(num_classes, np.int64); sum_e = 0
+            for c in range(num_classes):
+                d = min(127, max(0, (logits[c] - min_l) >> 1))
+                prob[c] = lut_exp[d]; sum_e += prob[c]
+            prob = (prob * 127) // max(sum_e, 1)
+            
+            # Backpropagation (dL, Update W2, b2, W1, b1)
+            dL = np.clip((prob - tgt) // 127, -5, 5) 
+            for c in range(num_classes):
+                db = dL[c] // ns; b2[c] -= db
+                for j in range(H):
+                    if h[j]: W2[j, c] -= (h[j] * db) // 127
+            
+            for j in range(H):
+                dh = 0
+                for c in range(num_classes):
+                    if h[j]: dh += dL[c] * W2[j, c]
+                db1 = dh // ns; b1[j] -= db1
+                p, q = indptr[j], indptr[j+1]
+                for k in range(p, q):
+                    values[k] -= (x[col_indices[k]] * db1) // 127
+                    
     return values, b1, W2, b2
 
-
 # --------------------------
-# Core Inference Function
+# Core Inference Function (MAX SPEED - NO CONFIDENCE CHECK)
 # --------------------------
+# **NOTE:** ฟังก์ชันนี้จะต้องรับ lut_exp และ CONF_THRESHOLD เข้ามาตามที่ Benchmark เรียกใช้
 @njit(parallel=True, fastmath=True, cache=True)
-def infer(X_i8, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD):
+def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD): 
     n = X_i8.shape[0]
     num_classes = len(b2)
     pred = np.empty(n, np.int64)
-    ee = 0
+    ee = 0 # Early Exit ถูกปิดการใช้งานเพื่อความเร็วสูงสุด
+    H_val = len(b1) # Use H from b1 size
+    
     for i in prange(n):
         x = X_i8[i]
-        h = np.zeros(H, np.int64)
+        h = np.zeros(H_val, np.int64)
         
-        # Forward Pass - Layer 1
-        for j in range(H):
+        # Forward Pass - Layer 1 (W1 * X + b1)
+        for j in range(H_val):
             acc = b1[j]
             for k in range(indptr[j], indptr[j+1]):
                 acc += x[col_indices[k]] * values[k]
             h[j] = max(acc >> 5, 0)
             
-        # Forward Pass - Layer 2 (Logits)
+        # Forward Pass - Layer 2 (W2 * H + b2) -> Logits
         logits = b2.copy()
-        for j in range(H):
+        for j in range(H_val):
             if h[j]:
                 for c in range(num_classes):
                     logits[c] += h[j] * W2[j, c]
         
-        # Softmax / Confidence Approximation (ใช้ค่า d แทน e^d)
-        min_l = logits.min()
-        sum_d = 0
-        max_l = logits[0]
-        for c in range(num_classes):
-            d = min(127, max(0, (logits[c] - min_l) >> 1))
-            sum_d += d
-            if logits[c] > max_l:
-                max_l = logits[c]
-                
-        conf = (max_l * 100) // max(sum_d, 1)
+        # Prediction Only 
         pred[i] = np.argmax(logits)
-        
-        if conf >= CONF_THRESHOLD:
-            ee += 1
             
-    return pred, ee / n
-
-
-# --------------------------
-# Optional Data Stream Generator
-# --------------------------
-def data_stream(n=1000):
-    # ใช้ N_FEATURES และ N_CLASSES ที่ถูกกำหนดไว้ใน Global Config
-    X = np.random.randn(n, N_FEATURES).astype(np.float32)
-    y = np.random.randint(0, N_CLASSES, size=n).astype(np.int32)
-    yield X, y
+    return pred, ee / n # ee/n จะเท่ากับ 0.0 เสมอ
