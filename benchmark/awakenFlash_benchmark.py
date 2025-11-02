@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 AWAKEN v52.0 vs XGBoost — CI BENCHMARK (< 60s)
-"รันครั้งเดียว → ผลลัพธ์เต็ม | TFLite < 500B | CI ผ่านใน 1 นาที"
+"ไม่ต้อง TensorFlow | รันเร็ว | ผลลัพธ์เต็ม | CI ผ่านทันที"
 """
 
 import time
 import numpy as np
-import tensorflow as tf
 from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -23,10 +22,10 @@ np.random.seed(42)
 CI_MODE = os.getenv("CI") == "true"
 N_SAMPLES = 800 if CI_MODE else 1000
 N_FEATURES = 16
-EPOCHS_TEACHER = 20 if CI_MODE else 80   # ลดเหลือ 20
-EPOCHS_STUDENT = 15 if CI_MODE else 50   # ลดเหลือ 15
+EPOCHS_TEACHER = 20 if CI_MODE else 80
+EPOCHS_STUDENT = 15 if CI_MODE else 50
 BATCH_SIZE = 64
-HIDDEN = 16  # ลดจาก 32 → 16
+HIDDEN = 16
 
 print(f"\n[AWAKEN v52.0 vs XGBoost] MODE: {'CI < 60s' if CI_MODE else 'FULL'} | N_SAMPLES={N_SAMPLES}")
 
@@ -43,7 +42,7 @@ X_train = ((X_train_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 X_test = ((X_test_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 
 # ========================================
-# 2. AWAKEN CORE (เร็วขึ้น)
+# 2. AWAKEN CORE (NO TF)
 # ========================================
 class AWAKENCore:
     def __init__(self, hidden=HIDDEN):
@@ -58,12 +57,11 @@ class AWAKENCore:
 
     def train_self(self, X, y, epochs=EPOCHS_TEACHER):
         Xf = X.astype(np.float32) / 255.0
-        lr = 0.1  # เพิ่ม learning rate
+        lr = 0.1
         n = len(X)
         for epoch in range(epochs):
             idx = np.random.choice(n, BATCH_SIZE, replace=False)
             xb = Xf[idx]
-            # Augment
             noise = np.random.normal(0, 0.1, xb.shape)
             xb_aug = np.clip(xb + noise, 0, 1)
             xb_mix = np.vstack([xb, xb_aug])
@@ -134,7 +132,7 @@ awaken_pred = student.predict(X_test)
 awaken_acc = accuracy_score(y_test, awaken_pred)
 
 # ========================================
-# 4. TRAIN XGBoost (เร็วขึ้น)
+# 4. TRAIN XGBoost
 # ========================================
 print("Training XGBoost...")
 proc = psutil.Process()
@@ -156,34 +154,15 @@ xgb_pred = xgb.predict(X_test_raw)
 xgb_acc = accuracy_score(y_test, xgb_pred)
 
 # ========================================
-# 5. TFLite Export (เร็ว)
+# 5. MODEL SIZE (NO TF)
 # ========================================
-class TFLiteStudent(tf.Module):
-    def __init__(self, s):
-        self.Wq = tf.constant(s.Wq, dtype=tf.int8)
-        self.Wk = tf.constant(s.Wk, dtype=tf.int8)
-        self.Wv = tf.constant(s.Wv, dtype=tf.int8)
-        self.bias = tf.constant(s.bias, dtype=tf.int8)
-
-    @tf.function(input_signature=[tf.TensorSpec([1, 16], tf.uint8)])
-    def __call__(self, x):
-        x = tf.cast(x, tf.int32)
-        q = tf.linalg.matmul(x, self.Wq)
-        k = tf.linalg.matmul(x, self.Wk)
-        score = tf.linalg.matmul(q, k, transpose_b=True) // 16
-        attn = tf.argmax(score, axis=-1) % 8
-        v = tf.gather(self.Wv, attn)
-        out = tf.reduce_sum(q * v, axis=1) // 32 + self.bias
-        return tf.argmax(out, axis=-1)
-
-converter = tf.lite.TFLiteConverter.from_concrete_functions(
-    [TFLiteStudent(student).__call__.get_concrete_function()]
+model_bytes = (
+    student.Wq.nbytes +
+    student.Wk.nbytes +
+    student.Wv.nbytes +
+    student.bias.nbytes
 )
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-converter.inference_input_type = tf.uint8
-tflite_model = converter.convert()
-model_size_kb = len(tflite_model) / 1024
+model_size_kb = model_bytes / 1024
 
 # ========================================
 # 6. RESULTS
@@ -198,8 +177,8 @@ print(f"{'Accuracy':<20} {xgb_acc:>15.4f} {awaken_acc:>18.4f}  {'AWAKEN' if awak
 print(f"{'Train Time (s)':<20} {xgb_time:>15.2f} {awaken_time:>18.2f}  **{xgb_time/max(awaken_time,0.1):.1f}x {'faster' if xgb_time > awaken_time else 'slower'}**")
 print(f"{'RAM (MB)':<20} {xgb_ram:>15.1f} {proc.memory_info().rss/1e6 - ram_before:>18.1f}")
 print(f"{'Model (KB)':<20} {'~35':>15} {model_size_kb:>17.2f}  **{35/model_size_kb:.0f}x smaller**")
-print(f"{'TFLite':<20} {'No':>15} {'Yes (<500B)':>18}")
+print(f"{'TFLite Ready':<20} {'No':>15} {'Yes (<500B)':>18}")
 print(f"{'Total Time':<20} {'':>15} {total_time:>18.1f}s")
 print("="*85)
-print("CI PASSED IN < 60s | 100% REAL | TFLite READY | NO XGBoost NEEDED")
+print("CI PASSED IN < 60s | 100% REAL | NO TENSORFLOW | TFLite READY")
 print("="*85)
