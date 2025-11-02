@@ -17,7 +17,7 @@ N_SAMPLES = 100_000 if CI_MODE else 100_000_000
 EPOCHS = 2 if CI_MODE else 3
 H = max(32, min(448, N_SAMPLES // 180))
 B = min(16384, max(1024, N_SAMPLES // 55))
-CONF_THRESHOLD = 80  # <--- ปรับให้ Early Exit สมจริง
+CONF_THRESHOLD = 80
 
 print(f"\n[AWAKENFLASH v1.0] MODE: {'CI 1-MIN' if CI_MODE else 'FULL'} | N_SAMPLES = {N_SAMPLES:,}")
 
@@ -71,7 +71,14 @@ xgb = XGBClassifier(
 xgb.fit(X_train, y_train)
 xgb_time = time.time() - t0
 xgb_ram = proc.memory_info().rss / 1e6 - ram_xgb_start
-del X_train, y_train, xgb; gc.collect()
+
+# เก็บค่า inference ก่อน del
+X_test, y_test = next(data_stream(10_000))
+xgb_pred = xgb.predict(X_test)
+xgb_acc = accuracy_score(y_test, xgb_pred)
+
+del X_train, y_train, xgb, xgb_pred
+gc.collect()
 
 # === awakenFlash ===
 print("awakenFlash TRAINING...")
@@ -154,7 +161,6 @@ flash_time = time.time() - t0
 flash_ram = proc.memory_info().rss / 1e6 - ram_flash_start
 
 # === INFERENCE ===
-X_test, y_test = next(data_stream(10_000))
 X_test_i8 = np.clip(np.round(X_test / final_scale), -128, 127).astype(np.int8)
 for _ in range(10):
     infer(X_test_i8[:1], values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD)
@@ -170,7 +176,7 @@ print("AWAKENFLASH v1.0 vs XGBoost | REAL RUN | CI PASSED")
 print("="*100)
 print(f"{'Metric':<25} {'XGBoost':>15} {'awakenFlash':>18} {'Win'}")
 print("-"*100)
-print(f"{'Accuracy':<25} {accuracy_score(y_test, xgb.predict(X_test)):>15.4f} {flash_acc:>18.4f}")
+print(f"{'Accuracy':<25} {xgb_acc:>15.4f} {flash_acc:>18.4f}")
 print(f"{'Train Time (s)':<25} {xgb_time:>15.1f} {flash_time:>18.1f}  **{xgb_time/flash_time:.1f}x faster**")
 print(f"{'Inference (ms)':<25} {0.412:>15.3f} {flash_inf:>18.5f}  **{412/flash_inf:.0f}x faster**")
 print(f"{'Early Exit':<25} {'0%':>15} {ee_ratio:>17.1%}")
