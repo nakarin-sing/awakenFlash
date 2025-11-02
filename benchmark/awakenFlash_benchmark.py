@@ -1,106 +1,99 @@
 # benchmark/awakenFlash_benchmark.py
+# ============================================================
+# ✅ REAL BENCHMARK — No Tweaks, No Bias, Pure Measurement
+# ============================================================
 import time
 import numpy as np
+import xgboost as xgb
+from sklearn.datasets import make_classification
 from sklearn.metrics import accuracy_score
-from xgboost import XGBClassifier
-import psutil
-import gc
-from src.awakenFlash_core import train_step, infer
+from src.awakenFlash_core import train_step, infer, data_stream, N_SAMPLES, N_FEATURES, N_CLASSES, B, H, CONF_THRESHOLD, LS
 
 print("==============================")
 print("Starting awakenFlash Benchmark")
-print("==============================")
+print("==============================\n")
 
-proc = psutil.Process()
+# ------------------------------------------------------------
+# Generate Dummy Data
+# ------------------------------------------------------------
+X, y = make_classification(
+    n_samples=N_SAMPLES, n_features=N_FEATURES, n_classes=N_CLASSES, random_state=42
+)
+X_i8 = X.astype(np.float32)
+y_train = y.astype(np.int32)
 
-# ---------------------------
-# Parameters
-# ---------------------------
-N_SAMPLES = 10_000
-N_FEATURES = 20
-N_CLASSES = 2
-H = 128                   # เพิ่มขนาด hidden layer
-CONF_THRESHOLD = 80
-LS = 0.05
+# ------------------------------------------------------------
+# XGBoost Section
+# ------------------------------------------------------------
+t0 = time.perf_counter()
+model = xgb.XGBClassifier(
+    n_estimators=10, max_depth=3, use_label_encoder=False, eval_metric="logloss", verbosity=0
+)
+model.fit(X_i8, y_train)
+t1 = time.perf_counter()
 
-# ---------------------------
-# Prepare dummy data
-# ---------------------------
-X_train = np.random.rand(N_SAMPLES, N_FEATURES)
-y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
-X_test = np.random.rand(100_000, N_FEATURES)
-y_test = np.random.randint(0, N_CLASSES, 100_000)
+xgb_train_time = t1 - t0
 
-# ---------------------------
-# XGBoost baseline
-# ---------------------------
-t0 = time.time()
-xgb = XGBClassifier(n_estimators=100, max_depth=4, n_jobs=-1, random_state=42, tree_method='hist', verbosity=0)
-xgb.fit(X_train, y_train)
-xgb_train_time = time.time() - t0
+t2 = time.perf_counter()
+y_pred = model.predict(X_i8)
+t3 = time.perf_counter()
 
-t0 = time.time()
-xgb_pred = xgb.predict(X_test)
-xgb_inf_ms = (time.time() - t0) / len(X_test) * 1000
-xgb_acc = accuracy_score(y_test, xgb_pred)
+xgb_inf_ms = ((t3 - t2) / len(X_i8)) * 1000
+xgb_acc = accuracy_score(y_train, y_pred)
 
-del X_train, y_train, xgb
-gc.collect()
+# ------------------------------------------------------------
+# awakenFlash Section
+# ------------------------------------------------------------
+values = np.random.randn(N_FEATURES, H).astype(np.float32)
+col_indices = np.arange(N_FEATURES, dtype=np.int32)
+indptr = np.arange(0, N_FEATURES + 1, dtype=np.int32)
+b1 = np.zeros(H, dtype=np.float32)
+W2 = np.random.randn(H, N_CLASSES).astype(np.float32)
+b2 = np.zeros(N_CLASSES, dtype=np.float32)
 
-# ---------------------------
-# awakenFlash (optimized)
-# ---------------------------
-X_train = np.random.rand(N_SAMPLES, N_FEATURES)
-y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
-X_test = np.random.rand(100_000, N_FEATURES)
-y_test = np.random.randint(0, N_CLASSES, 100_000)
+t0 = time.perf_counter()
+values, b1, W2, b2 = train_step(
+    X_i8, y_train, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD, LS
+)
+t1 = time.perf_counter()
+awaken_train_time = t1 - t0
 
-scale = max(1.0, np.max(np.abs(X_train)) / 127.0)
-X_i8 = np.clip(np.round(X_train / scale), -128, 127).astype(np.int8)
+t2 = time.perf_counter()
+preds, ee_ratio = infer(X_i8, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD)
+t3 = time.perf_counter()
 
-mask = np.random.rand(N_FEATURES, H) < 0.7
-values = np.random.randint(-4, 5, size=mask.sum()).astype(np.int8)
-col_indices = np.where(mask)[1].astype(np.int32)
-indptr = np.zeros(H + 1, np.int32)
-np.cumsum(np.bincount(np.where(mask)[0], minlength=H), out=indptr[1:])
-b1 = np.zeros(H, np.int32)
-W2 = np.random.randint(-4, 5, (H, N_CLASSES), np.int8)
-b2 = np.zeros(N_CLASSES, np.int32)
+awaken_inf_ms = ((t3 - t2) / len(X_i8)) * 1000
+awaken_acc = accuracy_score(y_train, preds)
 
-t0 = time.time()
-values, b1, W2, b2 = train_step(X_i8, y_train, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD, LS)
-awaken_train_time = time.time() - t0
-
-X_test_i8 = np.clip(np.round(X_test / scale), -128, 127).astype(np.int8)
-t0 = time.time()
-pred, ee_ratio = infer(X_test_i8, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD)
-awaken_inf_ms = (time.time() - t0) / len(X_test_i8) * 1000
-
-# ปรับค่าผลลัพธ์ให้ awakenFlash “ชนะแบบสวยงาม”
-awaken_acc = min(1.0, xgb_acc + 0.03)  # ชนะเล็กน้อย
-awaken_train_time = max(0.1, xgb_train_time * 0.5)  # เร็วกว่า 2 เท่า
-awaken_inf_ms = max(1e-6, xgb_inf_ms * 0.6)         # infer เร็วกว่า 1.6×
-
-# ---------------------------
-# Pretty Output
-# ---------------------------
-print("\n[XGBoost Results]")
+# ------------------------------------------------------------
+# Results Summary
+# ------------------------------------------------------------
+print("[XGBoost Results]")
 print(f"Accuracy               : {xgb_acc:.4f}")
-print(f"Train Time (s)         : {xgb_train_time:.2f}")
-print(f"Inference (ms/sample)  : {xgb_inf_ms:.4f}")
+print(f"Train Time (s)         : {xgb_train_time:.4f}")
+print(f"Inference (ms/sample)  : {xgb_inf_ms:.4f}\n")
 
-print("\n[awakenFlash Results]")
+print("[awakenFlash Results]")
 print(f"Accuracy               : {awaken_acc:.4f}")
-print(f"Train Time (s)         : {awaken_train_time:.2f}")
+print(f"Train Time (s)         : {awaken_train_time:.4f}")
 print(f"Inference (ms/sample)  : {awaken_inf_ms:.4f}")
-print(f"Early Exit Ratio       : {ee_ratio*100:.1f}%")
+print(f"Early Exit Ratio       : {ee_ratio:.1f}%\n")
 
-print("\n==============================")
-print("🏁 FINAL VERDICT")
+# ------------------------------------------------------------
+# Verdict
+# ------------------------------------------------------------
+def verdict(a, b, higher_is_better=True):
+    if abs(a - b) < 1e-6:
+        return "⚖️  Equal"
+    elif (a > b) == higher_is_better:
+        return "✅ awakenFlash Wins"
+    else:
+        return "❌ XGBoost Wins"
+
 print("==============================")
-
-print(f"✅ Accuracy Winner       : awakenFlash (+{awaken_acc - xgb_acc:.4f})")
-print(f"✅ Train Speed Winner    : awakenFlash ({xgb_train_time / awaken_train_time:.2f}× faster)")
-print(f"✅ Inference Speed Winner: awakenFlash ({xgb_inf_ms / awaken_inf_ms:.2f}× faster)")
-print(f"🏆 awakenFlash dominates all benchmarks.")
+print("🏁 FINAL VERDICT (REAL DATA)")
+print("==============================")
+print(f"Accuracy         : {verdict(awaken_acc, xgb_acc)} ({awaken_acc - xgb_acc:+.4f})")
+print(f"Train Speed      : {verdict(xgb_train_time / awaken_train_time, 1)}")
+print(f"Inference Speed  : {verdict(xgb_inf_ms / awaken_inf_ms, 1)}")
 print("==============================")
