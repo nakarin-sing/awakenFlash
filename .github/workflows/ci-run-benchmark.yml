@@ -30,6 +30,6 @@ jobs:
         pip install numpy numba scikit-learn xgboost psutil
 
     - name: Run awakenFlash benchmark
-      run: python benchmark/awakenFlash_benchmark.py
       env:
-        PYTHONPATH: ./src
+        PYTHONPATH: ${{ github.workspace }}/src
+      run: python benchmark/awakenFlash_benchmark.py
