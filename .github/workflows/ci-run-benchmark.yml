@@ -31,4 +31,4 @@ jobs:
 
     - name: Run awakenFlash benchmark
       run: |
-        python src/awakenFlash.py
+        python src/awakenFlash_core.py
