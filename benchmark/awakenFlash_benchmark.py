@@ -72,12 +72,12 @@ xgb.fit(X_train, y_train)
 xgb_time = time.time() - t0
 xgb_ram = proc.memory_info().rss / 1e6 - ram_xgb_start
 
-# เก็บค่า inference ก่อน del
-X_test, y_test = next(data_stream(10_000))
-xgb_pred = xgb.predict(X_test)
-xgb_acc = accuracy_score(y_test, xgb_pred)
+# เก็บค่า inference ก่อน del (ใช้ชื่อแยก)
+X_test_xgb, y_test_xgb = next(data_stream(10_000))
+xgb_pred = xgb.predict(X_test_xgb)
+xgb_acc = accuracy_score(y_test_xgb, xgb_pred)
 
-del X_train, y_train, xgb, xgb_pred
+del X_train, y_train, xgb, xgb_pred, X_test_xgb
 gc.collect()
 
 # === awakenFlash ===
@@ -160,7 +160,8 @@ for epoch in range(EPOCHS):
 flash_time = time.time() - t0
 flash_ram = proc.memory_info().rss / 1e6 - ram_flash_start
 
-# === INFERENCE ===
+# === INFERENCE (FIXED: สร้าง X_test ใหม่หลัง training) ===
+X_test, y_test = next(data_stream(10_000))  # สร้างใหม่!
 X_test_i8 = np.clip(np.round(X_test / final_scale), -128, 127).astype(np.int8)
 for _ in range(10):
     infer(X_test_i8[:1], values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD)
