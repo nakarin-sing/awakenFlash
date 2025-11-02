@@ -31,5 +31,5 @@ jobs:
 
     - name: Run awakenFlash benchmark
       env:
-        PYTHONPATH: ${{ github.workspace }}/src
+        PYTHONPATH: ./src
       run: python benchmark/awakenFlash_benchmark.py
