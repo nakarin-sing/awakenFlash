@@ -5,7 +5,7 @@ from sklearn.metrics import accuracy_score
 from xgboost import XGBClassifier
 import psutil
 import gc
-from src.awakenFlash_core import train_step, infer, data_stream, N_SAMPLES, N_FEATURES, N_CLASSES, B, H, CONF_THRESHOLD, LS, lut_exp
+from src.awakenFlash_core import train_step, infer  # import เฉพาะฟังก์ชันที่มีจริง
 
 print("==============================")
 print("Starting awakenFlash Benchmark")
@@ -14,10 +14,21 @@ print("==============================")
 proc = psutil.Process()
 
 # ---------------------------
+# Dummy parameters (แทนตัวแปรจาก core)
+# ---------------------------
+N_SAMPLES = 10_000       # ตัวอย่าง training
+N_FEATURES = 20          # จำนวน feature
+N_CLASSES = 2            # จำนวน class
+H = 64                   # hidden dim สำหรับ awakenFlash
+
+# ---------------------------
 # Prepare data
 # ---------------------------
-X_train, y_train = next(data_stream(N_SAMPLES))
-X_test, y_test = next(data_stream(100_000))
+# สร้าง dummy data แทน data_stream
+X_train = np.random.rand(N_SAMPLES, N_FEATURES)
+y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
+X_test = np.random.rand(100_000, N_FEATURES)
+y_test = np.random.randint(0, N_CLASSES, 100_000)
 
 # ---------------------------
 # XGBoost baseline
@@ -38,11 +49,13 @@ gc.collect()
 # ---------------------------
 # awakenFlash real run
 # ---------------------------
-X_train, y_train = next(data_stream(N_SAMPLES))
+X_train = np.random.rand(N_SAMPLES, N_FEATURES)
+y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
+
 scale = max(1.0, np.max(np.abs(X_train)) / 127.0)
 X_i8 = np.clip(np.round(X_train / scale), -128, 127).astype(np.int8)
 
-# Initialize weights / bias (simplified example, same as core)
+# Initialize weights / bias (simplified example)
 mask = np.random.rand(N_FEATURES, H) < 0.7
 values = np.random.randint(-4, 5, size=mask.sum()).astype(np.int8)
 col_indices = np.where(mask)[1].astype(np.int32)
@@ -66,7 +79,7 @@ awaken_acc = accuracy_score(y_test, pred)
 # Summary table
 # ---------------------------
 print("\n" + "="*80)
-print("awakenFlash vs XGBoost | 100M samples | REAL RUN | CI-friendly output")
+print("awakenFlash vs XGBoost | Dummy Data | CI-friendly output")
 print("="*80)
 print(f"{'Metric':<28} {'XGBoost':>12} {'awakenFlash':>12} {'Win'}")
 print("-"*80)
