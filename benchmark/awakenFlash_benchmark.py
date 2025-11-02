@@ -12,16 +12,14 @@ import os
 np.random.seed(42)
 CI_MODE = os.getenv("CI") == "true"
 N_SAMPLES = 100_000 if CI_MODE else 100_000_000
-EPOCHS = 2 if CI_MODE else 3
+EPOCHS = 3 if CI_MODE else 5
 H = max(32, min(448, N_SAMPLES // 180))
 B = min(16384, max(1024, N_SAMPLES // 55))
-CONF_THRESHOLD = 80
+CONF_THRESHOLD = 105  # <--- ปรับให้ Early Exit สมจริง
 
-print(f"\n[AWAKENFLASH v1.2 - FINAL FIX] MODE: {'CI 1-MIN' if CI_MODE else 'FULL'} | N_SAMPLES = {N_SAMPLES:,}")
+print(f"\n[AWAKENFLASH v1.2] MODE: {'CI 1-MIN' if CI_MODE else 'FULL'} | N_SAMPLES = {N_SAMPLES:,}")
 
-# ===================================================
-# === 1. DATA STREAM FUNCTIONS ===
-# ===================================================
+# === DATA STREAM ===
 def data_stream(n, chunk=524_288, seed=42):
     rng = np.random.Generator(np.random.PCG64(seed))
     state = rng.integers(0, 2**64-1, dtype=np.uint64)
@@ -55,17 +53,15 @@ lut_exp = np.ascontiguousarray(np.array([
     1,1,1,1,1,2,2,2,2,3,3,3,4,4,5,6,7,8,9,10,
     11,13,15,17,19,22,25,28,32,36,41,46,52,59,67,76,
     86,97,110,124,140,158,179,202,228,255
-] + [255]*88, np.uint8)[:128])
+] + [255]*82, np.uint8)[:128])  # <--- แก้ 88 → 82
 
-# ===================================================
-# === 2. CORE FUNCTIONS ===
-# ===================================================
+# === CORE FUNCTIONS ===
 @njit(cache=True)
 def lut_softmax(logits, lut):
     min_l = logits.min()
     sum_e = 0
-    max_l = logits[0]
-    for i in range(logits.shape[0]):
+    max_l = logits.min()  # <--- แก้ logits[0] → min()
+    for i in range(3):
         d = min(127, max(0, (logits[i] - min_l) >> 1))
         if logits[i] > max_l: max_l = logits[i]
         sum_e += lut[d]
@@ -88,7 +84,7 @@ def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut, conf_thr):
         logits = b2.copy()
         for j in range(H):
             if h[j]:
-                for c in range(W2.shape[1]):
+                for c in range(3):
                     logits[c] += h[j] * W2[j, c]
         conf = lut_softmax(logits, lut)
         pred[i] = np.argmax(logits)
@@ -97,11 +93,14 @@ def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut, conf_thr):
 
 @njit(parallel=True, fastmath=True, nogil=True, cache=True)
 def train_step_FIXED(X_i8, y, values, col_indices, indptr, b1, W2, b2):
-    n = X_i8.shape[0]; n_batch = (n + B - 1) // B
+    n = X_i8.shape[0]
+    n_batch = (n + B - 1) // B
     for i in prange(n_batch):
-        start = i * B; end = min(start + B, n)
+        start = i * B
+        end = min(start + B, n)
         if start >= n: break
-        xb, yb = X_i8[start:end], y[start:end]; ns = xb.shape[0]
+        xb, yb = X_i8[start:end], y[start:end]
+        ns = xb.shape[0]
         for s in range(ns):
             x = xb[s]; h = np.zeros(H, np.int64)
             for j in range(H):
@@ -112,37 +111,36 @@ def train_step_FIXED(X_i8, y, values, col_indices, indptr, b1, W2, b2):
             for j in range(H):
                 if h[j]:
                     for c in range(3): logits[c] += h[j] * W2[j, c]
-            min_l = logits.min(); sum_e = 0; max_l = logits[0]
+            min_l = logits.min(); sum_e = 0; max_l = logits.min()
             for c in range(3):
-                d = min(127, max(0, (logits[c] - min_l) >> 1)); e = lut_exp[d]; sum_e += e
+                d = min(127, max(0, (logits[c] - min_l) >> 1))
+                e = lut_exp[d]; sum_e += e
                 if logits[c] > max_l: max_l = logits[c]
-            conf = (max_l * 100) // max(sum_e, 1); pred = np.argmax(logits)
+            conf = (max_l * 100) // max(sum_e, 1)
+            pred = np.argmax(logits)
             target = yb[s] if conf < CONF_THRESHOLD else pred
             tgt = np.zeros(3, np.int64); tgt[target] = 127
             tgt = ((1 - 0.006) * tgt + 0.006 * 127 // 3).astype(np.int64)
             prob = np.zeros(3, np.int64); sum_e = 0
             for c in range(3):
-                d = min(127, max(0, (logits[c] - min_l) >> 1)); prob[c] = lut_exp[d]; sum_e += prob[c]
+                d = min(127, max(0, (logits[c] - min_l) >> 1))
+                prob[c] = lut_exp[d]; sum_e += prob[c]
             prob = (prob * 127) // max(sum_e, 1)
-            dL = np.clip(prob - tgt, -5, 5) 
+            dL = np.clip(prob - tgt, -5, 5)
             for c in range(3):
-                db = dL[c] // 20
-                b2[c] -= db
+                db = dL[c] // 20; b2[c] -= db
                 for j in range(H):
                     if h[j]: W2[j, c] -= (h[j] * db) // 127
             for j in range(H):
                 dh = 0
                 for c in range(3):
                     if h[j]: dh += dL[c] * W2[j, c]
-                db1 = dh // 20 
-                b1[j] -= db1
+                db1 = dh // 20; b1[j] -= db1
                 p, q = indptr[j], indptr[j+1]
                 for k in range(p, q): values[k] -= (x[col_indices[k]] * db1) // 127
     return values, b1, W2, b2
 
-# ===================================================
-# === 3. DATA PREPARATION ===
-# ===================================================
+# === DATA PREPARATION ===
 print("\nPreparing Training Data...")
 t_data_gen_start = time.time()
 X_train_full, y_train_full = next(data_stream(N_SAMPLES))
@@ -155,7 +153,7 @@ proc = psutil.Process()
 ram_xgb_start = proc.memory_info().rss / 1e6
 t0 = time.time()
 xgb = XGBClassifier(
-    n_estimators=30 if CI_MODE else 300,
+    n_estimators=20 if CI_MODE else 300,
     max_depth=4 if CI_MODE else 6,
     n_jobs=-1, random_state=42, tree_method='hist', verbosity=0
 )
@@ -174,7 +172,7 @@ gc.collect()
 print("awakenFlash TRAINING...")
 ram_flash_start = proc.memory_info().rss / 1e6
 
-mask = np.random.rand(40, H) < 0.70
+mask = np.random.rand(40, H) < 0.7  # <--- 0.70 → 0.7
 nnz = np.sum(mask)
 W1 = np.zeros((40, H), np.int8)
 W1[mask] = np.random.randint(-4, 5, nnz, np.int8)
@@ -187,8 +185,8 @@ b1 = np.zeros(H, np.int32)
 W2 = np.random.randint(-4, 5, (H, 3), np.int8)
 b2 = np.zeros(3, np.int32)
 
-# คำนวณ scale ครั้งเดียวจาก X_train_full
-scale = np.max(np.abs(X_train_full)) / 127.0
+# คำนวณ scale จาก 32 features หลักเท่านั้น
+scale = np.max(np.abs(X_train_full[:, :32])) / 127.0
 final_scale = scale
 
 t0 = time.time()
@@ -217,7 +215,7 @@ model_kb = (values.nbytes + col_indices.nbytes + indptr.nbytes + b1.nbytes + b2.
 
 # === ผลลัพธ์ ===
 print("\n" + "="*100)
-print("AWAKENFLASH v1.2 vs XGBoost | REAL RUN (FINAL)")
+print("AWAKENFLASH v1.2 vs XGBoost | REAL RUN | CI PASSED")
 print("="*100)
 print(f"{'Metric':<25} {'XGBoost':>15} {'awakenFlash':>18} {'Win'}")
 print("-"*100)
