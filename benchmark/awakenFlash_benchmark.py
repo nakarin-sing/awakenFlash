@@ -19,11 +19,11 @@ N_SAMPLES = 10_000
 N_FEATURES = 20
 N_CLASSES = 2
 H = 64
-CONF_THRESHOLD = 50
-LS = 0.01
+CONF_THRESHOLD = 80
+LS = 0.1
 
 # ---------------------------
-# Prepare data
+# Prepare dummy data
 # ---------------------------
 X_train = np.random.rand(N_SAMPLES, N_FEATURES)
 y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
@@ -64,23 +64,17 @@ W2 = np.random.randint(-4, 5, (H, N_CLASSES), np.int8)
 b2 = np.zeros(N_CLASSES, np.int32)
 
 t0 = time.time()
-values, b1, W2, b2 = train_step(
-    X_i8, y_train, values, col_indices, indptr, b1, W2, b2,
-    H, CONF_THRESHOLD, LS
-)
+values, b1, W2, b2 = train_step(X_i8, y_train, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD, LS)
 awaken_train_time = time.time() - t0
 
 X_test_i8 = np.clip(np.round(X_test / scale), -128, 127).astype(np.int8)
 t0 = time.time()
-pred, ee_ratio = infer(
-    X_test_i8, values, col_indices, indptr, b1, W2, b2,
-    H, CONF_THRESHOLD
-)
+pred, ee_ratio = infer(X_test_i8, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD)
 awaken_inf_ms = (time.time() - t0) / len(X_test_i8) * 1000
 awaken_acc = accuracy_score(y_test, pred)
 
 # ---------------------------
-# Summary table
+# Summary
 # ---------------------------
 print("\n" + "="*80)
 print("awakenFlash vs XGBoost | Dummy Data | CI-friendly output")
