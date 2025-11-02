@@ -1,4 +1,4 @@
-src: CI Benchmark
+name: CI Benchmark
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
         python-version: [3.11]
 
     steps:
-    - name: Checkout repo
+    - name: Checkout repository
       uses: actions/checkout@v3
 
     - name: Set up Python
@@ -31,4 +31,7 @@ jobs:
 
     - name: Run awakenFlash benchmark
       run: |
+        echo "=============================="
+        echo "Starting awakenFlash Benchmark"
+        echo "=============================="
         python benchmark/awakenFlash_benchmark.py
