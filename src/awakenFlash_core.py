@@ -1,138 +1,220 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash core — train + infer functions (INT8) [v2.0: Max Speed Inference]
+awakenFlash core — train + infer functions (INT8) (improved)
 """
 
 import numpy as np
 from numba import njit, prange
 
 # --------------------------
-# Global Config (Unchanged from v1.8)
+# Defaults (can be overridden by caller)
 # --------------------------
-N_SAMPLES = 100_000 
-N_FEATURES = 40     
-N_CLASSES = 3       
-H = 448            
-CONF_THRESHOLD = 80
-LS = 0.006          
+# NOTE: benchmark passes these explicitly to keep things explicit for numba.
+# N_SAMPLES, N_FEATURES, N_CLASSES are only defaults for local testing
+N_SAMPLES = 10000
+N_FEATURES = 32
+N_CLASSES = 3
+# safe defaults if not provided
+B_DEFAULT = 1024
+LS_DEFAULT = 0.006
+CONF_DEFAULT = 80
 
 # --------------------------
-# Core Train Function (unchanged logic from v1.8, now with LUT_EXP usage)
+# LUT-softmax helper
 # --------------------------
-# LUT_EXP ที่ถูกกำหนดไว้ใน Benchmark (แต่ควรอยู่ใน Core) ถูกจำลองไว้ใน Train_step 
-# เพื่อให้ Logic ถูกต้อง
+@njit(cache=True)
+def _lut_softmax_probs_int64(logits, lut):
+    # logits: 1d int64
+    L = logits.shape[0]
+    mn = logits[0]
+    for i in range(1, L):
+        if logits[i] < mn:
+            mn = logits[i]
+    s = 0
+    probs = np.empty(L, np.int32)
+    for i in range(L):
+        d = (logits[i] - mn) >> 1
+        if d < 0:
+            e = 1
+        elif d >= lut.shape[0]:
+            e = int(lut[lut.shape[0] - 1])
+        else:
+            e = int(lut[d])
+        probs[i] = e
+        s += e
+    if s == 0:
+        s = 1
+    for i in range(L):
+        probs[i] = (probs[i] * 127) // s
+    return probs
 
-# จำลอง LUT_EXP ที่ถูกส่งเข้ามา (ใน benchmark มีการกำหนดไว้)
-# NOTE: โค้ดที่รันจริงจะต้องมี lut_exp ถูกส่งเข้ามาใน train_step ด้วย
-# แต่เพื่อให้โค้ดนี้รันได้ใน Numba Standalone จะต้องมีการกำหนดค่าตายตัว
-lut_exp = np.ascontiguousarray(np.array([ 1,1,1,1,1,2,2,2,2,3,3,3,4,4,5,6,7,8,9,10, 
- 11,13,15,17,19,22,25,28,32,36,41,46,52,59,67,76, 
- 86,97,110,124,140,158,179,202,228,255 ] + [255]*88, np.uint8)[:128], dtype=np.int64)
-
-@njit(parallel=True, fastmath=True, nogil=True, cache=True)
-def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, B, H, CONF_THRESHOLD, LS, lut_exp):
+# --------------------------
+# TRAIN STEP (numba optimized)
+# signature: many args so numba infers types correctly
+# --------------------------
+@njit(parallel=True, cache=True, nogil=True, fastmath=True)
+def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2,
+               B_local, H_local, CONF_threshold, LS_local, lut_local):
     n = X_i8.shape[0]
-    num_classes = 3 # N_CLASSES
-    n_batch = (n + B - 1) // B
-    
-    for i in prange(n_batch):
-        start = i * B
-        end = min(start + B, n)
-        if start >= n: break
-            
-        # Batching Logic in Train Step
-        xb, yb = X_i8[start:end], y[start:end]
-        ns = xb.shape[0]
-        
-        for s in range(ns):
-            x = xb[s]; h = np.zeros(H, np.int64)
-            
-            # Layer 1
-            for j in range(H):
-                acc = b1[j]; p, q = indptr[j], indptr[j+1]
+    # parallelize by batches (n_batches = ceil(n/B_local))
+    n_batches = (n + B_local - 1) // B_local
+    for bi in prange(n_batches):
+        start = bi * B_local
+        end = start + B_local
+        if end > n:
+            end = n
+        # per-sample updates inside batch (keeps numba happy)
+        for i in range(start, end):
+            x = X_i8[i]
+            y_t = y[i]
+            # forward hidden
+            h = np.zeros(H_local, np.int64)
+            for j in range(H_local):
+                acc = b1[j]
+                p = indptr[j]
+                q = indptr[j+1]
                 for k in range(p, q):
-                    acc += x[col_indices[k]] * values[k]
-                h[j] = max(acc >> 5, 0)
-                
-            # Layer 2
-            logits = b2.copy()
-            for j in range(H):
-                if h[j]:
-                    for c in range(num_classes):
-                        logits[c] += h[j] * W2[j, c]
-                        
-            # Confidence Check (ใช้ LUT_EXP)
-            min_l = logits.min(); sum_e = 0; max_l = logits[0]
-            for c in range(num_classes):
-                d = min(127, max(0, (logits[c] - min_l) >> 1))
-                e = lut_exp[d]; sum_e += e
-                if logits[c] > max_l: max_l = logits[c]
-            
-            conf = (max_l * 100) // max(sum_e, 1)
-            pred = np.argmax(logits)
-            
-            # Label Smoothing & Early Exit Target
-            target = yb[s] if conf < CONF_THRESHOLD else pred
-            tgt = np.zeros(num_classes, np.int64); tgt[target] = 127
-            tgt = ((1 - LS) * tgt + LS * 127 // num_classes).astype(np.int64)
-            
-            # Probability Vector
-            prob = np.zeros(num_classes, np.int64); sum_e = 0
-            for c in range(num_classes):
-                d = min(127, max(0, (logits[c] - min_l) >> 1))
-                prob[c] = lut_exp[d]; sum_e += prob[c]
-            prob = (prob * 127) // max(sum_e, 1)
-            
-            # Backpropagation (dL, Update W2, b2, W1, b1)
-            dL = np.clip((prob - tgt) // 127, -5, 5) 
-            for c in range(num_classes):
-                db = dL[c] // ns; b2[c] -= db
-                for j in range(H):
-                    if h[j]: W2[j, c] -= (h[j] * db) // 127
-            
-            for j in range(H):
+                    acc += np.int64(x[col_indices[k]]) * np.int64(values[k])
+                if acc > 0:
+                    h[j] = acc >> 5
+                else:
+                    h[j] = 0
+            # logits
+            Lc = b2.shape[0]
+            logits = np.zeros(Lc, np.int64)
+            for j in range(H_local):
+                if h[j] > 0:
+                    for c in range(Lc):
+                        logits[c] += h[j] * np.int64(W2[j, c])
+            # probs via LUT
+            probs = _lut_softmax_probs_int64(logits, lut_local)
+            # compute confidence (use same LUT denom logic)
+            mn = logits[0]
+            for c in range(1, Lc):
+                if logits[c] < mn:
+                    mn = logits[c]
+            sum_e = 0
+            max_l = logits[0]
+            for c in range(Lc):
+                d = (logits[c] - mn) >> 1
+                if d < 0:
+                    e = 1
+                elif d >= lut_local.shape[0]:
+                    e = int(lut_local[lut_local.shape[0]-1])
+                else:
+                    e = int(lut_local[d])
+                sum_e += e
+                if logits[c] > max_l:
+                    max_l = logits[c]
+            conf = (max_l * 100) // max(1, sum_e)
+            # pseudo-label / teacher-choice
+            chosen = y_t if conf < CONF_threshold else 0
+            # if confident use predicted argmax
+            if conf >= CONF_threshold:
+                # argmax
+                best = 0
+                bv = logits[0]
+                for c in range(1, Lc):
+                    if logits[c] > bv:
+                        bv = logits[c]; best = c
+                chosen = best
+            # target smoothing
+            tgt = np.zeros(Lc, np.int64)
+            tgt[chosen] = 127
+            for c in range(Lc):
+                tgt[c] = int((1 - LS_local) * tgt[c] + LS_local * (127 // Lc))
+            # gradient-ish delta (integer)
+            dL = np.zeros(Lc, np.int32)
+            for c in range(Lc):
+                dL[c] = (probs[c] - tgt[c]) // 127
+                if dL[c] > 6: dL[c] = 6
+                if dL[c] < -6: dL[c] = -6
+            # update W2, b2
+            for c in range(Lc):
+                db = dL[c]
+                b2[c] -= db
+                for j in range(H_local):
+                    if h[j] > 0:
+                        W2[j, c] -= (h[j] * db) // 127
+            # update W1 values and b1
+            for j in range(H_local):
                 dh = 0
-                for c in range(num_classes):
-                    if h[j]: dh += dL[c] * W2[j, c]
-                db1 = dh // ns; b1[j] -= db1
-                p, q = indptr[j], indptr[j+1]
+                if h[j] > 0:
+                    for c in range(Lc):
+                        dh += dL[c] * np.int64(W2[j, c])
+                db1 = dh // max(1, Lc)
+                b1[j] -= db1
+                p = indptr[j]; q = indptr[j+1]
                 for k in range(p, q):
-                    values[k] -= (x[col_indices[k]] * db1) // 127
-                    
+                    values[k] -= (np.int64(x[col_indices[k]]) * db1) // 127
     return values, b1, W2, b2
 
 # --------------------------
-# Core Inference Function (MAX SPEED - NO CONFIDENCE CHECK)
+# INFER (numba optimized)
 # --------------------------
-# **NOTE:** ฟังก์ชันนี้จะต้องรับ lut_exp และ CONF_THRESHOLD เข้ามาตามที่ Benchmark เรียกใช้
-@njit(parallel=True, fastmath=True, cache=True)
-def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD): 
+@njit(cache=True, nogil=True, fastmath=True)
+def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut_local, CONF_threshold):
     n = X_i8.shape[0]
-    num_classes = len(b2)
     pred = np.empty(n, np.int64)
-    ee = 0 # Early Exit ถูกปิดการใช้งานเพื่อความเร็วสูงสุด
-    H_val = len(b1) # Use H from b1 size
-    
-    for i in prange(n):
+    ee = 0
+    H_local = b1.shape[0]
+    Lc = b2.shape[0]
+    for i in range(n):
         x = X_i8[i]
-        h = np.zeros(H_val, np.int64)
-        
-        # Forward Pass - Layer 1 (W1 * X + b1)
-        for j in range(H_val):
+        h = np.zeros(H_local, np.int64)
+        for j in range(H_local):
             acc = b1[j]
-            for k in range(indptr[j], indptr[j+1]):
-                acc += x[col_indices[k]] * values[k]
-            h[j] = max(acc >> 5, 0)
-            
-        # Forward Pass - Layer 2 (W2 * H + b2) -> Logits
-        logits = b2.copy()
-        for j in range(H_val):
-            if h[j]:
-                for c in range(num_classes):
-                    logits[c] += h[j] * W2[j, c]
-        
-        # Prediction Only 
-        pred[i] = np.argmax(logits)
-            
-    return pred, ee / n # ee/n จะเท่ากับ 0.0 เสมอ
+            p = indptr[j]; q = indptr[j+1]
+            for k in range(p, q):
+                acc += np.int64(x[col_indices[k]]) * np.int64(values[k])
+            if acc > 0:
+                h[j] = acc >> 5
+            else:
+                h[j] = 0
+        logits = np.zeros(Lc, np.int64)
+        for j in range(H_local):
+            if h[j] > 0:
+                for c in range(Lc):
+                    logits[c] += h[j] * np.int64(W2[j, c])
+        # conf
+        mn = logits[0]
+        for c in range(1, Lc):
+            if logits[c] < mn:
+                mn = logits[c]
+        sum_e = 0
+        max_l = logits[0]
+        for c in range(Lc):
+            d = (logits[c] - mn) >> 1
+            if d < 0:
+                e = 1
+            elif d >= lut_local.shape[0]:
+                e = int(lut_local[lut_local.shape[0]-1])
+            else:
+                e = int(lut_local[d])
+            sum_e += e
+            if logits[c] > max_l:
+                max_l = logits[c]
+        conf = (max_l * 100) // max(1, sum_e)
+        # argmax
+        best = 0; bv = logits[0]
+        for c in range(1, Lc):
+            if logits[c] > bv:
+                bv = logits[c]; best = c
+        pred[i] = best
+        if conf >= CONF_threshold:
+            ee += 1
+    return pred, ee / n
+
+# --------------------------
+# Optional pure-python data_stream for debugging (not numba)
+# --------------------------
+def data_stream(n=1000, seed=42, features=32, classes=3, chunk=100000):
+    rng = np.random.default_rng(seed)
+    for start in range(0, n, chunk):
+        size = min(chunk, n - start)
+        X = rng.standard_normal((size, features)).astype(np.float32)
+        if features >= 16:
+            X = np.hstack([X, (X[:, :8] * X[:, 8:16])])
+        y = rng.integers(0, classes, size, dtype=np.int64)
+        yield X, y
