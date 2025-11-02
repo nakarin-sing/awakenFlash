@@ -23,13 +23,13 @@ LS = 0.006
 
 print(f"\n[AWAKENFLASH v1.0] N_SAMPLES = {N_SAMPLES:,}")
 
-# === DATA STREAM (FIXED FOR CI) ===
+# === DATA STREAM (FIXED: No Overflow) ===
 def data_stream(n, chunk=CHUNK_SIZE, seed=SEED):
     rng = np.random.Generator(np.random.PCG64(seed))
     state = rng.bit_generator.state
     state_val = state['state']['state']
     inc = state['state']['inc']
-    rng_state = np.array([state_val, inc], dtype=np.uint64)
+    rng_state = [state_val, inc]  # Python int (arbitrary precision)
     
     for start in range(0, n, chunk):
         size = min(chunk, n - start)
@@ -42,14 +42,15 @@ def _generate_chunk(rng_state, size, f, c):
     y = np.empty(size, np.int64)
     state = rng_state[0]
     inc = rng_state[1]
+    mask_128 = (1 << 128) - 1
     for i in prange(size):
         for j in range(f):
-            state = (state * 6364136223846793005 + inc) & 0xFFFFFFFFFFFFFFFF
-            X[i, j] = ((state >> 40) * (1.0 / (1 << 24))) - 0.5
+            state = (state * 6364136223846793005 + inc) & mask_128
+            X[i, j] = ((state >> 64) * (1.0 / (1 << 24))) - 0.5
         for j in range(8):
             X[i, f + j] = X[i, j] * X[i, j + 8]
-        state = (state * 6364136223846793005 + inc) & 0xFFFFFFFFFFFFFFFF
-        y[i] = (state >> 58) % c
+        state = (state * 6364136223846793005 + inc) & mask_128
+        y[i] = (state >> 122) % c
     rng_state[0] = state
     return X, y
 
