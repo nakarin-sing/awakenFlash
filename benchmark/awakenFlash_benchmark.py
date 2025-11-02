@@ -30,10 +30,19 @@ HIDDEN = 16
 print(f"\n[AWAKEN v52.0 vs XGBoost] MODE: {'CI < 60s' if CI_MODE else 'FULL'} | N_SAMPLES={N_SAMPLES}")
 
 # ========================================
-# 1. DATA (16 dim → uint8)
+# 1. DATA (16 dim → uint8) — แก้ n_informative
 # ========================================
 t0 = time.time()
-X, y = make_classification(n_samples=N_SAMPLES, n_features=100, n_classes=3, random_state=42)
+X, y = make_classification(
+    n_samples=N_SAMPLES,
+    n_features=100,
+    n_classes=3,
+    n_clusters_per_class=2,
+    n_informative=6,      # แก้จาก 2 → 6 (ต้อง >= 3*2)
+    n_redundant=2,
+    n_repeated=0,
+    random_state=42
+)
 X = X[:, :N_FEATURES]
 
 X_train_raw, X_test_raw, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
