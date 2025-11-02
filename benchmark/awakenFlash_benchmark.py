@@ -30,7 +30,7 @@ HIDDEN = 16
 print(f"\n[AWAKEN v52.0 vs XGBoost] MODE: {'CI < 60s' if CI_MODE else 'FULL'} | N_SAMPLES={N_SAMPLES}")
 
 # ========================================
-# 1. DATA (16 dim → uint8) — แก้ n_informative
+# 1. DATA (16 dim → uint8)
 # ========================================
 t0 = time.time()
 X, y = make_classification(
@@ -38,7 +38,7 @@ X, y = make_classification(
     n_features=100,
     n_classes=3,
     n_clusters_per_class=2,
-    n_informative=6,      # แก้จาก 2 → 6 (ต้อง >= 3*2)
+    n_informative=6,
     n_redundant=2,
     n_repeated=0,
     random_state=42
@@ -51,18 +51,25 @@ X_train = ((X_train_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 X_test = ((X_test_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
 
 # ========================================
-# 2. AWAKEN CORE (NO TF)
+# 2. AWAKEN CORE — แก้ pretext task ให้ใช้ 2 คลาส
 # ========================================
 class AWAKENCore:
     def __init__(self, hidden=HIDDEN):
         self.W1 = np.random.randn(16, hidden).astype(np.float32) * 0.1
         self.b1 = np.zeros(hidden, np.float32)
-        self.W2 = np.random.randn(hidden, 3).astype(np.float32) * 0.1
-        self.b2 = np.zeros(3, np.float32)
+        # แยก head: pretext (2) + main (3)
+        self.W2_pretext = np.random.randn(hidden, 2).astype(np.float32) * 0.1
+        self.b2_pretext = np.zeros(2, np.float32)
+        self.W2_main = np.random.randn(hidden, 3).astype(np.float32) * 0.1
+        self.b2_main = np.zeros(3, np.float32)
 
-    def forward(self, x):
+    def forward_pretext(self, x):
         h = np.maximum(np.dot(x, self.W1) + self.b1, 0)
-        return np.dot(h, self.W2) + self.b2
+        return np.dot(h, self.W2_pretext) + self.b2_pretext
+
+    def forward_main(self, x):
+        h = np.maximum(np.dot(x, self.W1) + self.b1, 0)
+        return np.dot(h, self.W2_main) + self.b2_main
 
     def train_self(self, X, y, epochs=EPOCHS_TEACHER):
         Xf = X.astype(np.float32) / 255.0
@@ -74,23 +81,26 @@ class AWAKENCore:
             noise = np.random.normal(0, 0.1, xb.shape)
             xb_aug = np.clip(xb + noise, 0, 1)
             xb_mix = np.vstack([xb, xb_aug])
-            yb_mix = np.hstack([np.ones(BATCH_SIZE), np.zeros(BATCH_SIZE)]).astype(int)
+            yb_mix = np.hstack([np.ones(BATCH_SIZE), np.zeros(BATCH_SIZE)]).astype(int)  # real/fake
 
-            logits = self.forward(xb_mix)
+            # === Pretext Task (2 classes) ===
+            logits = self.forward_pretext(xb_mix)
             prob = np.exp(logits - np.max(logits, axis=1, keepdims=True))
             prob /= np.sum(prob, axis=1, keepdims=True)
 
-            d_logits = (prob - np.eye(2)[yb_mix]) / len(xb_mix)
+            # แก้ตรงนี้: ใช้ np.eye(2)
+            target = np.eye(2)[yb_mix]
+            d_logits = (prob - target) / len(xb_mix)
             h = np.maximum(np.dot(xb_mix, self.W1) + self.b1, 0)
             dW2 = h.T @ d_logits
             db2 = np.sum(d_logits, axis=0)
-            dh = d_logits @ self.W2.T
+            dh = d_logits @ self.W2_pretext.T
             dh[h <= 0] = 0
             dW1 = xb_mix.T @ dh
             db1 = np.sum(dh, axis=0)
 
-            self.W2 -= lr * dW2
-            self.b2 -= lr * db2
+            self.W2_pretext -= lr * dW2
+            self.b2_pretext -= lr * db2
             self.W1 -= lr * dW1
             self.b1 -= lr * db1
 
@@ -101,8 +111,9 @@ print("Training AWAKEN Teacher...")
 teacher = AWAKENCore(hidden=HIDDEN)
 teacher.train_self(X_train, y_train, epochs=EPOCHS_TEACHER)
 
+# ใช้ main head สำหรับ distillation
 Xf = X_train.astype(np.float32) / 255.0
-teacher_logits = teacher.forward(Xf)
+teacher_logits = teacher.forward_main(Xf)
 teacher_prob = np.exp(teacher_logits - np.max(teacher_logits, axis=1, keepdims=True))
 teacher_prob /= np.sum(teacher_prob, axis=1, keepdims=True)
 
@@ -163,7 +174,7 @@ xgb_pred = xgb.predict(X_test_raw)
 xgb_acc = accuracy_score(y_test, xgb_pred)
 
 # ========================================
-# 5. MODEL SIZE (NO TF)
+# 5. MODEL SIZE
 # ========================================
 model_bytes = (
     student.Wq.nbytes +
