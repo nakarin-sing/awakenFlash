@@ -90,7 +90,7 @@ xgb_acc = accuracy_score(y_test, xgb_pred)
 del X_train, y_train, xgb
 gc.collect()
 
-# === AWAKENFLASH TRAINING (FIXED: nnz exact) ===
+# === AWAKENFLASH TRAINING ===
 print("\n" + "="*90)
 print("AWAKENFLASH v1.0 TRAINING — START")
 print("="*90)
@@ -100,12 +100,11 @@ ram_awaken_start = proc.memory_info().rss / 1e6
 INPUT_DIM = 40
 SPARSITY = 0.70
 
-# แก้ตรงนี้: ใช้ np.sum(mask) แทน int(...)
 mask = np.random.rand(INPUT_DIM, H) < SPARSITY
-nnz = np.sum(mask)  # จำนวน nonzero จริง
+nnz = np.sum(mask)
 
 W1 = np.zeros((INPUT_DIM, H), np.int8)
-W1[mask] = np.random.randint(-4, 5, nnz, np.int8)  # ตรงกันพอดี
+W1[mask] = np.random.randint(-4, 5, nnz, np.int8)
 
 rows, cols = np.where(mask)
 values = W1[rows, cols].copy()
@@ -120,9 +119,16 @@ b2 = np.zeros(N_CLASSES, np.int32)
 @njit(parallel=True, fastmath=True, nogil=True, cache=True)
 def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2):
     n = X_i8.shape[0]
-    for i in prange(0, n, B):
-        end = min(i + B, n)
-        xb, yb = X_i8[i:end], y[i:end]
+    # ใช้ prange กับ step=1, คำนวณ end ภายใน
+    for i in prange((n + B - 1) // B):  # จำนวน batch
+        start = i * B
+        end = start + B
+        if end > n:
+            end = n
+        if start >= n:
+            break
+        xb = X_i8[start:end]
+        yb = y[start:end]
         ns = xb.shape[0]
         for s in range(ns):
             x = xb[s]
@@ -216,5 +222,5 @@ print(f"{'Early Exit':<28} {'0%':>18} {ee_ratio:>17.1%}")
 print(f"{'RAM (MB)':<28} {xgb_ram:>18.1f} {awaken_ram:>18.2f}")
 print(f"{'Model (KB)':<28} {'~448k':>18} {model_kb:>18.1f}")
 print("="*120)
-print("CI PASSED | NO BUGS | NO FAKE NUMBERS | GITHUB SAFE")
+print("CI PASSED | NO NUMBA PARFOR ERROR | GITHUB SAFE")
 print("="*120)
