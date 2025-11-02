@@ -1,4 +1,4 @@
-name: CI Benchmark
+src: CI Benchmark
 
 on:
   push:
@@ -31,4 +31,4 @@ jobs:
 
     - name: Run awakenFlash benchmark
       run: |
-        python src/awakenFlash_core.py
+        python benchmark/awakenFlash_benchmark.py
