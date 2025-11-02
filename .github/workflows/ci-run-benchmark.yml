@@ -10,6 +10,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -23,16 +24,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Benchmark with PYTHONPATH
+      - name: Run Benchmark
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          python benchmark/awakenFlash_benchmark.py
-
-      - name: Save Results
-        if: always()
-        run: |
-          python benchmark/awakenFlash_benchmark.py > benchmark_results.txt || true
+          python benchmark/awakenFlash_benchmark.py > benchmark_results.txt
 
       - name: Upload Results
         if: always()
