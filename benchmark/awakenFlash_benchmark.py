@@ -1,159 +1,106 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-AWAKEN v52.0 vs XGBoost — FULL BENCHMARK (NO TENSORFLOW)
-"CI ผ่านทันที | ไม่ต้อง TF | TFLite Ready | ผลลัพธ์เต็ม"
+awakenFlash vs XGBoost — Honest CI Benchmark (No Tweaking)
 """
 
 import time
 import numpy as np
-from sklearn.datasets import make_classification
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score
 from xgboost import XGBClassifier
-import psutil
-import os
+import psutil, gc
 
-# ========================================
-# CONFIG
-# ========================================
-np.random.seed(42)
-CI_MODE = os.getenv("CI") == "true"
-N_SAMPLES = 800 if CI_MODE else 1000
-BATCH_SIZE = 64
-EPOCHS_KD = 50 if CI_MODE else 100
-N_ESTIMATORS = 20 if CI_MODE else 100
-print(f"[AWAKEN v52.0 vs XGBoost] MODE: {'CI < 60s' if CI_MODE else 'FULL'} | SAMPLES={N_SAMPLES}")
+try:
+    from src.awakenFlash_core import train_step, infer, data_stream, N_SAMPLES, N_FEATURES, N_CLASSES, B, H, CONF_THRESHOLD, LS
+except ImportError:
+    from src.awakenFlash_core import train_step, infer, N_SAMPLES, N_FEATURES, N_CLASSES, B, H, CONF_THRESHOLD, LS
+    def data_stream(n=1000):
+        X = np.random.randn(n, N_FEATURES).astype(np.float32)
+        y = np.random.randint(0, N_CLASSES, size=n).astype(np.int32)
+        yield X, y
 
-# ========================================
-# 1. DATA
-# ========================================
-t0 = time.time()
-X, y = make_classification(
-    n_samples=N_SAMPLES,
-    n_features=100,
-    n_classes=3,
-    n_clusters_per_class=2,
-    n_informative=6,
-    n_redundant=2,
-    random_state=42
-)
-X = X[:, :16]
+print("==============================")
+print("Starting awakenFlash Benchmark")
+print("==============================")
 
-X_train_raw, X_test_raw, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-X_min, X_max = X_train_raw.min(), X_train_raw.max()
-X_train = ((X_train_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
-X_test = ((X_test_raw - X_min) / (X_max - X_min) * 255).astype(np.uint8)
-
-# ========================================
-# 2. XGBoost Teacher
-# ========================================
-print("Training XGBoost...")
 proc = psutil.Process()
-ram_before = proc.memory_info().rss / 1e6
-t_xgb = time.time()
-xgb = XGBClassifier(
-    n_estimators=N_ESTIMATORS,
-    max_depth=5,
-    learning_rate=0.1,
-    n_jobs=1,
-    random_state=42,
-    tree_method='hist',
-    verbosity=0
-)
-xgb.fit(X_train_raw, y_train)
-xgb_time = time.time() - t_xgb
-xgb_ram = proc.memory_info().rss / 1e6 - ram_before
 
-y_pred_xgb = xgb.predict(X_test_raw)
-acc_xgb = accuracy_score(y_test, y_pred_xgb)
-prec_xgb = precision_score(y_test, y_pred_xgb, average='macro', zero_division=0)
-rec_xgb = recall_score(y_test, y_pred_xgb, average='macro', zero_division=0)
-f1_xgb = f1_score(y_test, y_pred_xgb, average='macro', zero_division=0)
+# ---------------------------
+# Prepare Data
+# ---------------------------
+X_train = np.random.rand(N_SAMPLES, N_FEATURES)
+y_train = np.random.randint(0, N_CLASSES, N_SAMPLES)
+X_test = np.random.rand(100_000, N_FEATURES)
+y_test = np.random.randint(0, N_CLASSES, 100_000)
 
-# ========================================
-# 3. AWAKEN v52.0 Student (NO TF)
-# ========================================
-class OnDeviceLLM:
-    def __init__(self):
-        self.Wq = np.random.randint(-64, 64, (16, 8), dtype=np.int8)
-        self.Wk = np.random.randint(-64, 64, (16, 8), dtype=np.int8)
-        self.Wv = np.random.randint(-64, 64, (16, 3), dtype=np.int8)
-        self.bias = np.zeros(3, dtype=np.int8)
+# ---------------------------
+# XGBoost Baseline
+# ---------------------------
+t0 = time.time()
+xgb = XGBClassifier(n_estimators=200, max_depth=6, n_jobs=-1, random_state=42, tree_method='hist', verbosity=0)
+xgb.fit(X_train, y_train)
+xgb_train_time = time.time() - t0
 
-    def forward(self, x):
-        x = x.astype(np.int32)
-        q = np.dot(x, self.Wq)
-        k = np.dot(x, self.Wk)
-        score = np.dot(q, k.T) // 16
-        max_score = np.max(score, axis=1, keepdims=True)
-        attn = np.exp(score - max_score)
-        attn /= np.sum(attn, axis=1, keepdims=True)
-        v = np.dot(x, self.Wv)
-        out = np.dot(attn, v) // 32 + self.bias
-        return out
+t0 = time.time()
+xgb_pred = xgb.predict(X_test)
+xgb_inf_ms = (time.time() - t0) / len(X_test) * 1000
+xgb_acc = accuracy_score(y_test, xgb_pred)
 
-    def predict(self, x):
-        return np.argmax(self.forward(x), axis=1)
+del xgb
+gc.collect()
 
-print("Distilling AWAKEN v52.0...")
-model = OnDeviceLLM()
-teacher_logits = xgb.predict_proba(X_train_raw)
+# ---------------------------
+# awakenFlash Real Run
+# ---------------------------
+scale = max(1.0, np.max(np.abs(X_train)) / 127.0)
+X_i8 = np.clip(np.round(X_train / scale), -128, 127).astype(np.int8)
 
-t_awaken = time.time()
-for _ in range(EPOCHS_KD):
-    idx = np.random.choice(len(X_train), BATCH_SIZE)
-    x = X_train[idx]
-    t = teacher_logits[idx]
+mask = np.random.rand(N_FEATURES, H) < 0.7
+values = np.random.randint(-4, 5, size=mask.sum()).astype(np.int8)
+col_indices = np.where(mask)[1].astype(np.int32)
+indptr = np.zeros(H + 1, np.int32)
+np.cumsum(np.bincount(np.where(mask)[0], minlength=H), out=indptr[1:])
+b1 = np.zeros(H, np.int32)
+W2 = np.random.randint(-4, 5, (H, N_CLASSES), np.int8)
+b2 = np.zeros(N_CLASSES, np.int32)
 
-    logits = model.forward(x)
-    max_logit = np.max(logits, axis=1, keepdims=True)
-    prob = np.exp(logits - max_logit)
-    prob /= np.sum(prob, axis=1, keepdims=True)
-    d_logits = (prob - t) / BATCH_SIZE
+t0 = time.time()
+values, b1, W2, b2 = train_step(X_i8, y_train, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD, LS)
+awaken_train_time = time.time() - t0
 
-    x_int = x.astype(np.int32)
-    dWv = x_int.T @ d_logits // 128
-    model.Wv -= np.clip(dWv, -64, 63).astype(np.int8)
+X_test_i8 = np.clip(np.round(X_test / scale), -128, 127).astype(np.int8)
+t0 = time.time()
+pred, ee_ratio = infer(X_test_i8, values, col_indices, indptr, b1, W2, b2, H, CONF_THRESHOLD)
+awaken_inf_ms = (time.time() - t0) / len(X_test_i8) * 1000
+awaken_acc = accuracy_score(y_test, pred)
 
-awaken_time = time.time() - t_awaken
-y_pred_awaken = model.predict(X_test)
-acc_awaken = accuracy_score(y_test, y_pred_awaken)
-prec_awaken = precision_score(y_test, y_pred_awaken, average='macro', zero_division=0)
-rec_awaken = recall_score(y_test, y_pred_awaken, average='macro', zero_division=0)
-f1_awaken = f1_score(y_test, y_pred_awaken, average='macro', zero_division=0)
+# ---------------------------
+# Results
+# ---------------------------
+print("\n[XGBoost Results]")
+print(f"Accuracy               : {xgb_acc:.4f}")
+print(f"Train Time (s)         : {xgb_train_time:.2f}")
+print(f"Inference (ms/sample)  : {xgb_inf_ms:.4f}")
 
-# ========================================
-# 4. MODEL SIZE (NO TF)
-# ========================================
-model_bytes = (
-    model.Wq.nbytes +
-    model.Wk.nbytes +
-    model.Wv.nbytes +
-    model.bias.nbytes
-)
-model_size_kb = model_bytes / 1024
+print("\n[awakenFlash Results]")
+print(f"Accuracy               : {awaken_acc:.4f}")
+print(f"Train Time (s)         : {awaken_train_time:.2f}")
+print(f"Inference (ms/sample)  : {awaken_inf_ms:.4f}")
+print(f"Early Exit Ratio       : {ee_ratio*100:.1f}%")
 
-# ========================================
-# 5. RESULTS
-# ========================================
-total_time = time.time() - t0
-ram_final = proc.memory_info().rss / 1e6
-print("\n" + "="*90)
-print(" " * 30 + "AWAKEN v52.0 vs XGBoost")
-print("="*90)
-print(f"{'Metric':<25} {'XGBoost':>15} {'AWAKEN v52':>18} {'Winner'}")
-print("-"*90)
-print(f"{'Accuracy':<25} {acc_xgb:>15.4f} {acc_awaken:>18.4f}  {'AWAKEN' if acc_awaken >= acc_xgb else 'XGBoost'}")
-print(f"{'Precision':<25} {prec_xgb:>15.4f} {prec_awaken:>18.4f}")
-print(f"{'Recall':<25} {rec_xgb:>15.4f} {rec_awaken:>18.4f}")
-print(f"{'F1-Score':<25} {f1_xgb:>15.4f} {f1_awaken:>18.4f}")
-print(f"{'Train Time (s)':<25} {xgb_time:>15.2f} {awaken_time:>18.2f}  **{xgb_time/max(awaken_time,0.1):.1f}x {'faster' if xgb_time > awaken_time else 'slower'}**")
-print(f"{'RAM (MB)':<25} {xgb_ram:>15.1f} {ram_final - ram_before:>18.1f}")
-print(f"{'Model Size (KB)':<25} {'~35':>15} {model_size_kb:>17.2f}  **{35/model_size_kb:.0f}x smaller**")
-print(f"{'TFLite Ready':<25} {'No':>15} {'Yes (<500B)':>18}")
-print(f"{'On-Device':<25} {'No':>15} {'Yes (MCU)':>18}")
-print(f"{'Total Time':<25} {'':>15} {total_time:>18.1f}s")
-print("="*90)
-print("CI PASSED | NO TENSORFLOW | TFLite READY | 100% REAL")
-print("="*90)
+print("\n==============================")
+print("🏁 FINAL VERDICT")
+print("==============================")
+
+def verdict(name, awaken_val, xgb_val, higher_is_better=True):
+    if awaken_val == xgb_val:
+        return "🤝 Tie"
+    better = awaken_val > xgb_val if higher_is_better else awaken_val < xgb_val
+    symbol = "✅ awakenFlash wins" if better else "❌ XGBoost wins"
+    diff = awaken_val - xgb_val if higher_is_better else xgb_val - awaken_val
+    return f"{symbol} ({diff:+.4f})"
+
+print(f"Accuracy Result        : {verdict('Accuracy', awaken_acc, xgb_acc)}")
+print(f"Train Speed Result     : {verdict('Train', awaken_train_time, xgb_train_time, higher_is_better=False)}")
+print(f"Inference Speed Result : {verdict('Inference', awaken_inf_ms, xgb_inf_ms, higher_is_better=False)}")
+print("==============================")
