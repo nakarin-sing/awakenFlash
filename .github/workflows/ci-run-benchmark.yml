@@ -1,3 +1,4 @@
+# .github/workflows/ci-run-benchmark.yml
 name: CI - Run Benchmark
 
 on:
@@ -9,7 +10,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +23,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           CI: true
         run: |
-          python benchmark/awakenFlash_benchmark.py > benchmark_results.txt
+          python benchmark/awakenFlash_benchmark.py  # ไม่ต้อง > ไฟล์
       - uses: actions/upload-artifact@v4
         if: always()
         with:
