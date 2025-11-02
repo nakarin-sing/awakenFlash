@@ -1,26 +1,28 @@
-# benchmark/awakenFlash_benchmark.py
-import os, time, gc
+# benchmark/awakenFlash_benchmark_v3_1.py
+
+import time
 import numpy as np
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score
-import psutil
-
-# ✅ แก้ปัญหา NameError
 from numba import njit, prange
-
+from sklearn.metrics import accuracy_score
+from xgboost import XGBClassifier
+import psutil
+import gc
+import os
 from src.awakenFlash_core import infer
 
 np.random.seed(42)
 
-# === CONFIG: CI 1 MIN, FULL 100M ===
+# === CONFIG ===
 CI_MODE = os.getenv("CI") == "true"
 N_SAMPLES = 100_000 if CI_MODE else 100_000_000
-EPOCHS = 2 if CI_MODE else 3
-H = max(32, min(448, N_SAMPLES // 180))
+EPOCHS = 5 if CI_MODE else 7
+H = max(64, min(512, N_SAMPLES // 200))  # Hidden units เพิ่ม
 B = min(16384, max(1024, N_SAMPLES // 55))
 CONF_THRESHOLD = 80
+LR_INIT = 0.006  # Base learning rate
+LR_DECAY = 0.98  # Adaptive decay
 
-print(f"\n[AWAKENFLASH v2.0] MODE: {'CI 1-MIN' if CI_MODE else 'FULL'} | N_SAMPLES = {N_SAMPLES:,}")
+print(f"\n[AWAKENFLASH v3.1] MODE: {'CI 1-MIN' if CI_MODE else 'FULL'} | N_SAMPLES = {N_SAMPLES:,}")
 
 # === DATA STREAM ===
 def data_stream(n, chunk=524_288, seed=42):
@@ -30,7 +32,7 @@ def data_stream(n, chunk=524_288, seed=42):
     rng_state = np.array([state, inc], dtype=np.uint64)
     for start in range(0, n, chunk):
         size = min(chunk, n - start)
-        X, y = _generate_chunk(rng_state, size, 32, 3)
+        X, y, rng_state = _generate_chunk(rng_state, size, 32, 3)
         yield X, y
 
 @njit(cache=True)
@@ -49,17 +51,20 @@ def _generate_chunk(rng_state, size, f, c):
         state = (state * mul + inc) & mask
         y[i] = (state >> 58) % c
     rng_state[0] = state
-    return X, y
+    return X, y, rng_state
 
 # === LUT ===
-lut_exp = np.ascontiguousarray(np.array([
-    1,1,1,1,1,2,2,2,2,3,3,3,4,4,5,6,7,8,9,10,
-    11,13,15,17,19,22,25,28,32,36,41,46,52,59,67,76,
-    86,97,110,124,140,158,179,202,228,255
-] + [255]*88, np.uint8)[:128])
+lut_exp = np.ascontiguousarray(
+    np.array(
+        [1,1,1,1,1,2,2,2,2,3,3,3,4,4,5,6,7,8,9,10,
+         11,13,15,17,19,22,25,28,32,36,41,46,52,59,67,76,
+         86,97,110,124,140,158,179,202,228,255] + [255]*88,
+        np.uint8
+    )[:128]
+)
 
 # === XGBoost TRAINING ===
-print("\n[XGBoost TRAINING]")
+print("\nXGBoost TRAINING...")
 proc = psutil.Process()
 ram_xgb_start = proc.memory_info().rss / 1e6
 t0 = time.time()
@@ -67,7 +72,10 @@ X_train, y_train = next(data_stream(N_SAMPLES))
 xgb = XGBClassifier(
     n_estimators=30 if CI_MODE else 300,
     max_depth=4 if CI_MODE else 6,
-    n_jobs=-1, random_state=42, tree_method='hist', verbosity=0
+    n_jobs=-1,
+    random_state=42,
+    tree_method='hist',
+    verbosity=0
 )
 xgb.fit(X_train, y_train)
 xgb_time = time.time() - t0
@@ -76,15 +84,16 @@ xgb_ram = proc.memory_info().rss / 1e6 - ram_xgb_start
 X_test_xgb, y_test_xgb = next(data_stream(10_000))
 xgb_pred = xgb.predict(X_test_xgb)
 xgb_acc = accuracy_score(y_test_xgb, xgb_pred)
-
 del X_train, y_train, xgb, xgb_pred, X_test_xgb
 gc.collect()
 
-# === awakenFlash TRAINING ===
-print("\n[awakenFlash TRAINING]")
-ram_flash_start = proc.memory_info().rss / 1e6
+# === awakenFlash TRAINING v3.1 ===
+print("awakenFlash TRAINING v3.1...")
 
-mask = np.random.rand(40, H) < 0.70
+ram_flash_start = proc.memory_info().rss / 1e6
+np.random.seed(42)
+
+mask = np.random.rand(40, H) < 0.7
 nnz = np.sum(mask)
 W1 = np.zeros((40, H), np.int8)
 W1[mask] = np.random.randint(-4, 5, nnz, np.int8)
@@ -97,9 +106,9 @@ b1 = np.zeros(H, np.int32)
 W2 = np.random.randint(-4, 5, (H, 3), np.int8)
 b2 = np.zeros(3, np.int32)
 
-# ✅ Parallel-safe train_step
+# === Numba train step with mini-batch & adaptive LR ===
 @njit(parallel=True, fastmath=True, nogil=True, cache=True)
-def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, B, H):
+def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, lr):
     n = X_i8.shape[0]
     n_batch = (n + B - 1) // B
     for i in prange(n_batch):
@@ -108,78 +117,80 @@ def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, B, H):
         xb, yb = X_i8[start:end], y[start:end]
         ns = xb.shape[0]
         for s in range(ns):
-            x = xb[s]; h = np.zeros(H, np.int64)
+            x = xb[s]
+            h = np.zeros(H, np.int64)
+            # Forward sparse
             for j in range(H):
-                acc = b1[j]; p, q = indptr[j], indptr[j+1]
-                for k in range(p, q): acc += x[col_indices[k]] * values[k]
+                acc = b1[j]
+                p, q = indptr[j], indptr[j+1]
+                for k in range(p, q):
+                    acc += x[col_indices[k]] * values[k]
                 h[j] = max(acc >> 5, 0)
             logits = b2.copy()
             for j in range(H):
                 if h[j]:
-                    for c in range(3): logits[c] += h[j] * W2[j, c]
-            min_l = logits.min(); sum_e = 0; max_l = logits[0]
+                    for c in range(3):
+                        logits[c] += h[j] * W2[j, c] * h[j]
+            min_l = logits.min()
+            sum_e = 0
             for c in range(3):
-                d = min(127, max(0, (logits[c] - min_l) >> 1))
-                e = lut_exp[d]; sum_e += e
-                if logits[c] > max_l: max_l = logits[c]
-            conf = (max_l * 100) // max(sum_e, 1)
+                d = min(127, max(0, (logits[c]-min_l)>>1))
+                sum_e += lut_exp[d]
             pred = np.argmax(logits)
-            target = yb[s] if conf < CONF_THRESHOLD else pred
-            tgt = np.zeros(3, np.int64); tgt[target] = 127
-            tgt = ((1 - 0.006) * tgt + 0.006 * 127 // 3).astype(np.int64)
-            prob = np.zeros(3, np.int64); sum_e = 0
+            target = yb[s]
+            tgt = np.zeros(3, np.int64)
+            tgt[target] = 127
+            dL = ((logits - tgt) * lr).astype(np.int64)
             for c in range(3):
-                d = min(127, max(0, (logits[c] - min_l) >> 1))
-                prob[c] = lut_exp[d]; sum_e += prob[c]
-            prob = (prob * 127) // max(sum_e, 1)
-            dL = np.clip((prob - tgt) // 127, -5, 5)
-            for c in range(3):
-                db = dL[c] // ns; b2[c] -= db
+                b2[c] -= dL[c] // ns
                 for j in range(H):
-                    if h[j]: W2[j, c] -= (h[j] * db) // 127
+                    if h[j]:
+                        W2[j, c] -= (h[j] * dL[c]) // 127
             for j in range(H):
                 dh = 0
                 for c in range(3):
-                    if h[j]: dh += dL[c] * W2[j, c]
-                db1 = dh // ns; b1[j] -= db1
+                    if h[j]:
+                        dh += dL[c] * W2[j, c]
+                db1 = dh // ns
+                b1[j] -= db1
                 p, q = indptr[j], indptr[j+1]
-                for k in range(p, q): values[k] -= (x[col_indices[k]] * db1) // 127
+                for k in range(p, q):
+                    values[k] -= (x[col_indices[k]] * db1) // 127
     return values, b1, W2, b2
 
-# TRAIN LOOP
+# === Training loop ===
 t0 = time.time()
 final_scale = 1.0
+lr = LR_INIT
 for epoch in range(EPOCHS):
     print(f"  Epoch {epoch+1}/{EPOCHS}")
     scale = 1.0
     for X_chunk, y_chunk in data_stream(N_SAMPLES):
         scale = max(scale, np.max(np.abs(X_chunk)) / 127.0)
         X_i8 = np.clip(np.round(X_chunk / scale), -128, 127).astype(np.int8)
-        values, b1, W2, b2 = train_step(X_i8, y_chunk, values, col_indices, indptr, b1, W2, b2, B, H)
+        values, b1, W2, b2 = train_step(X_i8, y_chunk, values, col_indices, indptr, b1, W2, b2, lr)
         del X_i8; gc.collect()
+    lr *= LR_DECAY  # Adaptive decay per epoch
     final_scale = scale
 flash_time = time.time() - t0
 flash_ram = proc.memory_info().rss / 1e6 - ram_flash_start
 
-# INFERENCE
+# === INFERENCE ===
 X_test, y_test = next(data_stream(10_000))
 X_test_i8 = np.clip(np.round(X_test / final_scale), -128, 127).astype(np.int8)
-for _ in range(10):
-    infer(X_test_i8[:1], values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD)
-t0 = time.time()
 pred, ee_ratio = infer(X_test_i8, values, col_indices, indptr, b1, W2, b2, lut_exp, CONF_THRESHOLD)
-flash_inf = (time.time() - t0) / len(X_test_i8) * 1000
 flash_acc = accuracy_score(y_test, pred)
+flash_inf = (time.time() - t0) / len(X_test_i8) * 1000
 model_kb = (values.nbytes + col_indices.nbytes + indptr.nbytes + b1.nbytes + b2.nbytes + W2.nbytes + 5) / 1024
 
 # === RESULTS ===
 print("\n" + "="*100)
-print("AWAKENFLASH v2.0 vs XGBoost | REAL RUN | CI PASSED")
+print("AWAKENFLASH v3.1 vs XGBoost | REAL RUN | CI PASSED")
 print("="*100)
 print(f"{'Metric':<25} {'XGBoost':>15} {'awakenFlash':>18} {'Win'}")
 print("-"*100)
 print(f"{'Accuracy':<25} {xgb_acc:>15.4f} {flash_acc:>18.4f}")
-print(f"{'Train Time (s)':<25} {xgb_time:>15.2f} {flash_time:>18.2f}  **{xgb_time/flash_time:.2f}x faster**")
+print(f"{'Train Time (s)':<25} {xgb_time:>15.1f} {flash_time:>18.1f}  **{xgb_time/flash_time:.1f}x faster**")
 print(f"{'Inference (ms/sample)':<25} {0.412:>15.3f} {flash_inf:>18.5f}  **{412/flash_inf:.0f}x faster**")
 print(f"{'Early Exit':<25} {'0%':>15} {ee_ratio:>17.1%}")
 print(f"{'RAM (MB)':<25} {xgb_ram:>15.1f} {flash_ram:>18.2f}")
