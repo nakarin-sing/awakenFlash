@@ -1,110 +1,123 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-AWAKEN vΩ.4 — CI-READY + FIXED POLY2
-"แก้ broadcast | เทียบ XGBoost | RAM ต่ำ | Train เร็ว"
+awakenFlash vΩ.5 — REAL-WORLD BENCHMARK
+"100% FAIR | ยุติธรรม | ไม่มโน | หล่อแบบพระเอกไทย"
 MIT © 2025 xAI Research
 """
 
-import time
+import time, resource
 import numpy as np
-from sklearn.metrics import accuracy_score
-import resource
 import xgboost as xgb
+from sklearn.datasets import load_breast_cancer, load_iris, load_wine
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score
 
 # ========================================
-# CONFIG
-# ========================================
-N_SAMPLES = 100_000
-N_FEATURES = 40
-N_CLASSES = 3
-
-# ========================================
-# DATA
-# ========================================
-def data_stream():
-    rng = np.random.Generator(np.random.PCG64(42))
-    X = rng.normal(0, 1, (N_SAMPLES, N_FEATURES)).astype(np.float32)
-    X[:, -3:] = X[:, :3] * X[:, 3:6] + rng.normal(0, 0.1, (N_SAMPLES, 3)).astype(np.float32)
-    W_true = rng.normal(0, 1, (N_FEATURES, N_CLASSES)).astype(np.float32)
-    logits = X @ W_true
-    y = np.argmax(logits, axis=1).astype(np.int32)
-    return X, y
-
-# ========================================
-# AWAKEN MODELS
+# MODELS
 # ========================================
 class OneStep:
-    def __init__(self):
-        self.W = None
     def fit(self, X, y):
-        y_onehot = np.eye(N_CLASSES)[y]
+        y_onehot = np.eye(np.max(y)+1)[y]
         self.W = np.linalg.pinv(X) @ y_onehot
     def predict(self, X):
         return np.argmax(X @ self.W, axis=1)
 
 class Poly2:
-    def __init__(self):
-        self.W = None
     def fit(self, X, y):
-        n = X.shape[0]
-        # pairwise degree-2 feature
-        X_poly = np.hstack([X, (X[:, :, None] * X[:, None, :]).reshape(n, -1)])
-        y_onehot = np.eye(N_CLASSES)[y]
+        n_samples, n_features = X.shape
+        X_poly = np.hstack([X, (X[:, :, None] * X[:, None, :]).reshape(n_samples, -1)])
+        y_onehot = np.eye(np.max(y)+1)[y]
         self.W = np.linalg.pinv(X_poly) @ y_onehot
     def predict(self, X):
-        n = X.shape[0]
-        X_poly = np.hstack([X, (X[:, :, None] * X[:, None, :]).reshape(n, -1)])
+        n_samples, n_features = X.shape
+        X_poly = np.hstack([X, (X[:, :, None] * X[:, None, :]).reshape(n_samples, -1)])
         return np.argmax(X_poly @ self.W, axis=1)
 
-# ========================================
-# BENCHMARK
-# ========================================
-def run_benchmark():
-    print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
-    X, y = data_stream()
-    idx = np.random.permutation(N_SAMPLES)
-    X_train, X_test = X[idx[:80000]], X[idx[80000:]]
-    y_train, y_test = y[idx[:80000]], y[idx[80000:]]
+class RFF:
+    def __init__(self, D=512, gamma=0.1, seed=42):
+        self.D = D
+        self.gamma = gamma
+        self.seed = seed
+    def fit(self, X, y):
+        rng = np.random.default_rng(self.seed)
+        n_features = X.shape[1]
+        W = rng.normal(0, np.sqrt(2*self.gamma), (n_features, self.D))
+        b = rng.uniform(0, 2*np.pi, self.D)
+        Z = np.sqrt(2/self.D) * np.cos(X @ W + b)
+        y_onehot = np.eye(np.max(y)+1)[y]
+        self.W_out = np.linalg.pinv(Z) @ y_onehot
+        self.Z_train = Z
+        self.b = b
+        self.W_rff = W
+    def predict(self, X):
+        Z = np.sqrt(2/self.D) * np.cos(X @ self.W_rff + self.b)
+        return np.argmax(Z @ self.W_out, axis=1)
 
-    results = {}
+# ========================================
+# BENCHMARK FUNCTION
+# ========================================
+def benchmark_dataset(X, y, name):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    results = []
 
-    # === XGBoost ===
-    model_xgb = xgb.XGBClassifier(
-        n_estimators=300, max_depth=6,
-        n_jobs=-1, tree_method='hist', verbosity=0
-    )
+    # XGBoost
     t0 = time.time()
+    model_xgb = xgb.XGBClassifier(n_estimators=100, use_label_encoder=False, eval_metric='logloss')
     model_xgb.fit(X_train, y_train)
-    results['xgb_time'] = time.time() - t0
-    results['xgb_acc'] = accuracy_score(y_test, model_xgb.predict(X_test))
+    t_xgb = time.time() - t0
+    acc_xgb = accuracy_score(y_test, model_xgb.predict(X_test))
+    f1_xgb = f1_score(y_test, model_xgb.predict(X_test), average='weighted')
+    results.append(("XGBoost", acc_xgb, f1_xgb, t_xgb))
 
-    # === AWAKEN OneStep ===
+    # OneStep
+    t0 = time.time()
     model_os = OneStep()
-    t0 = time.time()
     model_os.fit(X_train, y_train)
-    results['os_time'] = time.time() - t0
-    results['os_acc'] = accuracy_score(y_test, model_os.predict(X_test))
+    t_os = time.time() - t0
+    acc_os = accuracy_score(y_test, model_os.predict(X_test))
+    f1_os = f1_score(y_test, model_os.predict(X_test), average='weighted')
+    results.append(("OneStep", acc_os, f1_os, t_os))
 
-    # === AWAKEN Poly2 ===
-    model_p2 = Poly2()
+    # Poly2
     t0 = time.time()
-    model_p2.fit(X_train, y_train)
-    results['p2_time'] = time.time() - t0
-    results['p2_acc'] = accuracy_score(y_test, model_p2.predict(X_test))
+    model_poly = Poly2()
+    model_poly.fit(X_train, y_train)
+    t_poly = time.time() - t0
+    acc_poly = accuracy_score(y_test, model_poly.predict(X_test))
+    f1_poly = f1_score(y_test, model_poly.predict(X_test), average='weighted')
+    results.append(("Poly2", acc_poly, f1_poly, t_poly))
 
-    print(f"\n{'MODEL':<12} {'ACC':<10} {'Train Time':<10}")
-    print(f"{'-'*35}")
-    print(f"XGBoost     {results['xgb_acc']:.4f}   {results['xgb_time']:.3f}s")
-    print(f"OneStep     {results['os_acc']:.4f}   {results['os_time']:.3f}s")
-    print(f"Poly2       {results['p2_acc']:.4f}   {results['p2_time']:.3f}s")
-    print(f"RAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
+    # RFF
+    t0 = time.time()
+    model_rff = RFF(D=512, gamma=0.1)
+    model_rff.fit(X_train, y_train)
+    t_rff = time.time() - t0
+    acc_rff = accuracy_score(y_test, model_rff.predict(X_test))
+    f1_rff = f1_score(y_test, model_rff.predict(X_test), average='weighted')
+    results.append(("RFF", acc_rff, f1_rff, t_rff))
 
-    print("\n" + "="*50)
-    print("AWAKEN vΩ.4 — CI-READY | FIXED POLY2")
-    print("="*50)
-    print("ไม่มโน | ไม่กาว | เทียบ XGBoost แบบยุติธรรม")
-    print("="*50)
+    # PRINT RESULTS
+    print(f"\n===== Dataset: {name} =====")
+    print(f"{'Model':<10} {'ACC':<8} {'F1':<8} {'Train(s)':<10}")
+    for r in results:
+        print(f"{r[0]:<10} {r[1]:.4f} {r[2]:.4f} {r[3]:.3f}")
 
-if __name__ == "__main__":
-    run_benchmark()
+# ========================================
+# RUN REAL-WORLD BENCHMARK
+# ========================================
+datasets = {
+    "BreastCancer": load_breast_cancer(),
+    "Iris": load_iris(),
+    "Wine": load_wine()
+}
+
+print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
+for name, data in datasets.items():
+    benchmark_dataset(data.data, data.target, name)
+print(f"RAM End:   {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
+
+print("\n==================================================")
+print("awakenFlash vΩ.5 — REAL-WORLD BENCHMARK")
+print("ยุติธรรม | ไม่มโน | เทียบชัด XGBoost vs Linear/Poly/RFF")
+print("==================================================")
