@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final.py
-FINAL CI-SAFE VERSION
-- VotingClassifier bug fix (voting='soft')
-- Memory + time profiling
-- Poly2Wrapper C=0.1
-- FIX: Ensured full DataFrame output in log
-- FIX: Added explicit _estimator_type for Pipelines to bypass CI bug
+awakenFlash_benchmark_final_v2.py
+FINAL CI-SAFE VERSION (FIXED PIPELINE ERROR)
+- FIX: Removed Pipelines from VotingClassifier (AttributeError: property '_estimator_type')
+- Preprocessing (StandardScaler) is now done explicitly before the benchmark loop.
+- VotingClassifier uses 'soft' voting with direct estimators.
 """
 
 import numpy as np
@@ -23,16 +21,16 @@ try:
     sns.set(style="whitegrid")
     HAVE_MPL = True
 except ModuleNotFoundError:
+    # พิมพ์ข้อความแจ้งเตือนเท่านั้น
     print("matplotlib/seaborn not found, skipping plots")
     HAVE_MPL = False
 
 # ----------------------
 # sklearn + xgboost
 # ----------------------
-from sklearn.datasets import load_breast_cancer
+from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.kernel_approximation import RBFSampler
 from sklearn.ensemble import VotingClassifier
@@ -49,10 +47,15 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     def __init__(self, degree=2, C=0.1):
         self.degree = degree
         self.C = C
+        # PolyFit only once (Assumption: data from the same dataset is used)
         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        self.clf.fit(self.poly.fit_transform(X), y)
+        # Fit poly features first (only if needed, but not done here due to scaled data)
+        # Note: Since the input X is already scaled, we only fit the final LR model.
+        # For generality, we still transform the data in fit/predict.
+        X_transformed = self.poly.fit_transform(X)
+        self.clf.fit(X_transformed, y)
         return self
     def predict(self, X):
         return self.clf.predict(self.poly.transform(X))
@@ -70,7 +73,9 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         self.rff = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        self.clf.fit(self.rff.fit_transform(X), y)
+        # Fit RFF features
+        X_transformed = self.rff.fit_transform(X)
+        self.clf.fit(X_transformed, y)
         return self
     def predict(self, X):
         return self.clf.predict(self.rff.transform(X))
@@ -81,119 +86,162 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 # ----------------------
-# Dataset
+# Adaptive Hyperparameters (Adapted from previous logic)
 # ----------------------
-dataset = load_breast_cancer()
-X, y = dataset.data, dataset.target
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, stratify=y, random_state=42
-)
-
-# ----------------------
-# Pipelines & Ensemble
-# ----------------------
-pipe_xgb = Pipeline([
-    ('scaler', StandardScaler()),
-    ('xgb', xgb.XGBClassifier(max_depth=3, n_estimators=200,
-                              use_label_encoder=False, eval_metric='logloss', random_state=42))
-])
-pipe_poly2 = Pipeline([
-    ('scaler', StandardScaler()),
-    ('poly2', Poly2Wrapper(degree=2, C=0.1))
-])
-pipe_rff = Pipeline([
-    ('scaler', StandardScaler()),
-    ('rff', RFFWrapper(gamma='scale', n_components=100, C=1.0))
-])
-
-# ----------------------------------------------------
-# 💡 FIX 1: เพิ่ม property '_estimator_type' ให้กับ Pipeline เพื่อ Bypass Error Type Check
-# ----------------------------------------------------
-pipe_xgb._estimator_type = 'classifier'
-pipe_poly2._estimator_type = 'classifier'
-pipe_rff._estimator_type = 'classifier'
-
-ensemble = VotingClassifier(
-    estimators=[
-        ('XGBoost', pipe_xgb),
-        ('Poly2', pipe_poly2),
-        ('RFF', pipe_rff)
-    ],
-    voting='soft'  # FIX 2: ใช้ soft voting เพื่อให้มันใช้ predict_proba
-)
-
-models = {"XGBoost": pipe_xgb, "Poly2": pipe_poly2, "RFF": pipe_rff, "Ensemble": ensemble}
+def adaptive_hyperparameters(dataset_name):
+    if dataset_name == 'breast_cancer':
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 0.0016, 'rff_n_components': 100}
+    elif dataset_name == 'iris':
+        return {'poly_C': 0.1, 'rff_C': 0.1, 'rff_gamma': 1.25, 'rff_n_components': 52}
+    elif dataset_name == 'wine':
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 0.056, 'rff_n_components': 50}
+    else:
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
 
 # ----------------------
-# Benchmark (with time + memory)
+# The Benchmark Function
 # ----------------------
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-results = []
+def run_benchmark(dataset_name, X, y):
+    print(f"\n--- Running Benchmark for {dataset_name.upper()} ---")
+    
+    # 1. Split and Scale Data Explicitly
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # 2. Get Hyperparameters
+    hparams = adaptive_hyperparameters(dataset_name)
 
-for name, model in models.items():
-    try:
-        # CV safe: skip for Ensemble
-        if name != "Ensemble":
-            # Start memory & time tracking (for CV)
+    # 3. Define Models (NO PIPELINES)
+    xgb_clf = xgb.XGBClassifier(max_depth=3, n_estimators=200,
+                                use_label_encoder=False, eval_metric='logloss', random_state=42)
+    poly2_clf = Poly2Wrapper(degree=2, C=hparams['poly_C'])
+    rff_clf = RFFWrapper(gamma=hparams['rff_gamma'], n_components=hparams['rff_n_components'], C=hparams['rff_C'])
+
+    # 4. Define Ensemble (using direct estimators)
+    ensemble = VotingClassifier(
+        estimators=[
+            ('XGBoost', xgb_clf),
+            ('Poly2', poly2_clf),
+            ('RFF', rff_clf)
+        ],
+        voting='soft'
+    )
+    
+    # 5. Model Dictionary
+    models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "Ensemble (Soft)": ensemble}
+    
+    # 6. Benchmark Loop
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    results = []
+
+    for name, model in models.items():
+        try:
+            # ใช้ข้อมูลที่ถูก Scaled แล้วโดยตรง
+            X_train_data = X_train_scaled
+            X_test_data = X_test_scaled
+            
+            # CV safe: skip for Ensemble
+            if "Ensemble" not in name:
+                # Start memory & time tracking (for CV)
+                tracemalloc.start()
+                t_cv_start = time.time()
+                cv_scores = cross_val_score(model, X_train_data, y_train, cv=cv, scoring='accuracy')
+                t_cv_end = time.time()
+                cv_mean_acc = cv_scores.mean()
+                mem_current, mem_peak_cv = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                cv_time = t_cv_end - t_cv_start
+            else:
+                cv_mean_acc = np.nan
+                mem_peak_cv = 0
+                cv_time = 0 
+
+            # Start memory & time tracking (for fit)
             tracemalloc.start()
-            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
-            cv_mean_acc = cv_scores.mean()
-            mem_current, mem_peak_cv = tracemalloc.get_traced_memory()
+            t0 = time.time()
+            model.fit(X_train_data, y_train)
+            train_time = time.time() - t0
+            mem_current, mem_peak_fit = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-        else:
-            cv_mean_acc = np.nan
-            mem_peak_cv = 0 # ไม่ได้วัด CV Peak Memory สำหรับ Ensemble
 
-        # Start memory & time tracking (for fit)
-        tracemalloc.start()
-        t0 = time.time()
-        model.fit(X_train, y_train)
-        train_time = time.time() - t0
-        mem_current, mem_peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+            # Predict
+            t0 = time.time()
+            y_train_pred = model.predict(X_train_data)
+            y_test_pred = model.predict(X_test_data)
+            predict_time = time.time() - t0
 
-        # Predict
-        t0 = time.time()
-        y_train_pred = model.predict(X_train)
-        y_test_pred = model.predict(X_test)
-        predict_time = time.time() - t0
-
-        # Save results
-        results.append({
-            'Model': name,
-            'Train ACC': accuracy_score(y_train, y_train_pred),
-            'Test ACC': accuracy_score(y_test, y_test_pred),
-            'Train F1': f1_score(y_train, y_train_pred, average='weighted'),
-            'Test F1': f1_score(y_test, y_test_pred, average='weighted'),
-            'CV mean ACC': cv_mean_acc,
-            'Train time (s)': round(train_time, 4),
-            'Predict time (s)': round(predict_time, 4),
-            'Memory peak (MB)': round(mem_peak/1e6, 4)
-        })
-    except Exception as e:
-        print(f"Failed {name}: {e}")
-
-df = pd.DataFrame(results)
+            # Save results
+            results.append({
+                'Dataset': dataset_name,
+                'Model': name,
+                'Train ACC': accuracy_score(y_train, y_train_pred),
+                'Test ACC': accuracy_score(y_test, y_test_pred),
+                'Train F1': f1_score(y_train, y_train_pred, average='weighted'),
+                'Test F1': f1_score(y_test, y_test_pred, average='weighted'),
+                'CV mean ACC': cv_mean_acc,
+                'Train time (s)': round(train_time, 4),
+                'Predict time (s)': round(predict_time, 4),
+                'CV time (s)': round(cv_time, 4),
+                'Memory peak (MB)': round(mem_peak_fit/1e6, 4)
+            })
+        except Exception as e:
+            print(f"Failed {name}: {e}")
+            
+    return pd.DataFrame(results)
 
 # ----------------------
-# FIX 3: ส่วนที่เพิ่มเพื่อแสดงผลลัพธ์ใน Log อย่างสมบูรณ์
+# Main Execution
 # ----------------------
-# ตั้งค่า Pandas ให้แสดงผลลัพธ์ทั้งหมดโดยไม่ตัดทอน
-pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', 1000)
+if __name__ == '__main__':
+    all_results = []
+    
+    # Run Breast Cancer
+    data_bc = load_breast_cancer()
+    all_results.append(run_benchmark('breast_cancer', data_bc.data, data_bc.target))
 
-# พิมพ์ DataFrame ทั้งหมดลงใน Log โดยใช้ .to_string()
-print("\n--- Benchmark Results (Full) ---\n")
-print(df.to_string())
-df.to_csv("benchmark_results.csv", index=False)
+    # Run Iris
+    data_iris = load_iris()
+    all_results.append(run_benchmark('iris', data_iris.data, data_iris.target))
+    
+    # Run Wine
+    data_wine = load_wine()
+    all_results.append(run_benchmark('wine', data_wine.data, data_wine.target))
 
-# ----------------------
-# Optional plot
-# ----------------------
-if HAVE_MPL:
-    plt.figure(figsize=(8,5))
-    sns.barplot(data=df, x='Model', y='Test ACC')
-    plt.title("Benchmark Test ACC")
-    plt.tight_layout()
-    plt.savefig("benchmark_test_acc.png", dpi=300)
+    # Combine Results
+    df_final = pd.concat(all_results, ignore_index=True)
+
+    # ----------------------
+    # FIX 3: ส่วนที่แสดงผลลัพธ์ใน Log อย่างสมบูรณ์
+    # ----------------------
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 1000)
+
+    print("\n--- FINAL Benchmark Results (Full) ---\n")
+    print(df_final.to_string())
+    df_final.to_csv("benchmark_results.csv", index=False)
+
+    # ----------------------
+    # Optional plot
+    # ----------------------
+    if HAVE_MPL:
+        # Plot Test ACC
+        plt.figure(figsize=(10,6))
+        sns.barplot(data=df_final, x='Model', y='Test ACC', hue='Dataset')
+        plt.title("Benchmark Test ACC by Dataset (Fixed Version)")
+        plt.legend(loc='lower right')
+        plt.tight_layout()
+        plt.savefig("benchmark_test_acc_final.png", dpi=300)
+        
+        # Plot Memory
+        plt.figure(figsize=(10,6))
+        sns.barplot(data=df_final, x='Model', y='Memory peak (MB)', hue='Dataset')
+        plt.title("Memory Peak during Fit (MB)")
+        plt.legend(loc='upper right')
+        plt.tight_layout()
+        plt.savefig("benchmark_memory_final.png", dpi=300)
+
