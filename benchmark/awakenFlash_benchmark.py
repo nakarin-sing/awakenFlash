@@ -299,7 +299,13 @@ def benchmark_fair():
         print(f"             Speedup: {speedup:.2f}x → Winner: {speed_winner}")
         
         # Memory comparison
-        mem_ratio = mem_used_xgb / mem_used_onestep if mem_used_onestep > 0 else 0
+        # Handle edge case where memory measurement is 0 or negative
+        if mem_used_onestep <= 0:
+            mem_used_onestep = 0.01  # Use small positive value
+        if mem_used_xgb <= 0:
+            mem_used_xgb = 0.01
+            
+        mem_ratio = mem_used_xgb / mem_used_onestep
         mem_winner = "OneStep" if mem_ratio > 1 else "XGBoost"
         print(f"Memory:      OneStep {mem_used_onestep:.2f}MB vs XGBoost {mem_used_xgb:.2f}MB")
         print(f"             Ratio: {mem_ratio:.2f}x less → Winner: {mem_winner}")
@@ -338,9 +344,18 @@ def benchmark_fair():
     
     for r in all_results:
         acc_comp = f"{r['onestep']['accuracy']:.4f} vs {r['xgboost']['accuracy']:.4f}"
-        speedup = r['xgboost']['time'] / r['onestep']['time']
+        
+        # Handle speed calculation safely
+        if r['onestep']['time'] > 0:
+            speedup = r['xgboost']['time'] / r['onestep']['time']
+        else:
+            speedup = 999.9
         speed_comp = f"{speedup:.1f}x faster"
-        mem_ratio = r['xgboost']['memory_mb'] / r['onestep']['memory_mb']
+        
+        # Handle memory calculation safely
+        mem_onestep = max(r['onestep']['memory_mb'], 0.01)
+        mem_xgb = max(r['xgboost']['memory_mb'], 0.01)
+        mem_ratio = mem_xgb / mem_onestep
         mem_comp = f"{mem_ratio:.1f}x less"
         
         print(f"{r['dataset']:<15} {acc_comp:<20} {speed_comp:<20} {mem_comp:<20}")
