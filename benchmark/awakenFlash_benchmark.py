@@ -28,12 +28,27 @@ class OneStepOptimized:
     2. Optimized feature engineering
     3. Adaptive regularization
     4. Memory-efficient implementation
+    5. Scikit-learn compatible (implements get_params/set_params)
     """
     def __init__(self, C=1e-3, use_poly=True, poly_degree=2):
         self.C = C
         self.use_poly = use_poly
         self.poly_degree = poly_degree
         self.W = None
+    
+    def get_params(self, deep=True):
+        """Get parameters for this estimator (required for sklearn compatibility)"""
+        return {
+            'C': self.C,
+            'use_poly': self.use_poly,
+            'poly_degree': self.poly_degree
+        }
+    
+    def set_params(self, **params):
+        """Set parameters for this estimator (required for sklearn compatibility)"""
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
         
     def fit(self, X, y):
         """
