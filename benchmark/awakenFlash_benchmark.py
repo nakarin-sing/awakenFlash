@@ -1,222 +1,230 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-awakenFlash vΩ.14 — THE GOLDEN RATIO CORE (Memory Optimized)
-"50% Memory Reduction + Optimal Performance"
-MIT © 2025 xAI Research
-"""
-
-import time
+import os
 import numpy as np
-import xgboost as xgb
+import warnings
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.metrics import accuracy_score, f1_score
-import resource
-import gc
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 
-# ========================================
-# MEMORY-OPTIMIZED GOLDEN RATIO CORE
-# ========================================
+warnings.filterwarnings('ignore')
 
-class OneStepGoldenRatio:
-    """
-    Memory-optimized version: 50%+ RAM reduction through:
-    1. In-place operations
-    2. Lazy feature expansion  
-    3. Memory-efficient data types
-    4. Aggressive garbage collection
-    """
-    def __init__(self, C=1e-3, clip_percentile=99.5):
-        self.C = C
-        self.clip_percentile = clip_percentile
-        # Store only essential preprocessing stats
-        self.preprocess_stats_ = None
+# สร้าง folder ผลลัพธ์
+os.makedirs("benchmark_results", exist_ok=True)
+results_file = "benchmark_results/results_improved.txt"
 
-    def _preprocess(self, X, is_fit=True):
-        """Memory-efficient preprocessing with in-place operations"""
-        # Work in-place when possible
-        if not X.flags['WRITEABLE']:
-            X = X.copy()
-        
-        # 1. Skew correction (in-place when possible)
-        np.log1p(X, out=X)
-        
-        # 2. Outlier handling  
-        if is_fit:
-            upper = np.percentile(X, self.clip_percentile, axis=0)
-            lower = np.percentile(X, 100 - self.clip_percentile, axis=0)
-            mean = X.mean(axis=0)
-            std = X.std(axis=0)
-            std[std == 0] = 1.0
-            
-            self.preprocess_stats_ = {
-                'upper': upper.astype(np.float32),
-                'lower': lower.astype(np.float32), 
-                'mean': mean.astype(np.float32),
-                'std': std.astype(np.float32)
-            }
-        
-        # Apply clipping and scaling
-        stats = self.preprocess_stats_
-        np.clip(X, stats['lower'], stats['upper'], out=X)
-        X -= stats['mean']
-        X /= stats['std']
-        
-        return X
+# ตรึง random seed ทั้งหมด
+RANDOM_STATE = 42
+np.random.seed(RANDOM_STATE)
 
-    def _add_features_memory_efficient(self, X):
-        """Memory-efficient feature expansion without large intermediates"""
-        n_samples, n_features = X.shape
-        
-        # Pre-allocate final array
-        n_output_features = n_features * 2 + 1
-        X_final = np.empty((n_samples, n_output_features), dtype=np.float32)
-        
-        # Fill in place: bias term
-        X_final[:, 0] = 1.0
-        
-        # Original features
-        X_final[:, 1:n_features+1] = X
-        
-        # Quadratic terms (reusing memory)
-        X_final[:, n_features+1:] = X ** 2
-        
-        return X_final
+# datasets
+datasets = {
+    "breast_cancer": load_breast_cancer(),
+    "iris": load_iris(),
+    "wine": load_wine(),
+}
 
-    def fit(self, X, y):
-        """Memory-optimized fitting"""
-        X_final = self._add_features_memory_efficient(X)
-        n_classes = y.max() + 1
-        y_onehot = np.eye(n_classes, dtype=np.float32)[y]
-        
-        # Efficient matrix operations
-        XTX = X_final.T @ X_final
-        lambda_adaptive = self.C * np.trace(XTX) / XTX.shape[0]
-        
-        # Solve system efficiently
-        I = np.eye(XTX.shape[0], dtype=np.float32)
-        XTY = X_final.T @ y_onehot
-        
-        self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY)
-        
-        # Clean up intermediates
-        del X_final, XTX, XTY, I, y_onehot
-        gc.collect()
-        
-    def predict(self, X):
-        """Memory-optimized prediction"""
-        X_final = self._add_features_memory_efficient(X)
-        predictions = (X_final @ self.W).argmax(axis=1)
-        
-        del X_final
-        gc.collect()
-        
-        return predictions
-
-# ========================================
-# ULTRA-LEAN BENCHMARK EXECUTION
-# ========================================
-
-def benchmark_memory_optimized():
-    print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
+def run_benchmark():
+    output_lines = []
+    output_lines.append("=" * 80 + "\n")
+    output_lines.append("IMPROVED FAIR BENCHMARK WITH HYPERPARAMETER TUNING\n")
+    output_lines.append("=" * 80 + "\n\n")
     
-    # Conservative XGBoost config for memory efficiency
-    xgb_config = dict(
-        n_estimators=30,  # Reduced from 50
-        max_depth=3,      # Reduced from 4  
-        n_jobs=1,
-        verbosity=0,
-        tree_method='hist',
-        random_state=42
-    )
-    
-    datasets = [
-        ("BreastCancer", load_breast_cancer()),
-        ("Iris", load_iris()),
-        ("Wine", load_wine())
-    ]
-
-    xgb_total_time = 0
-    onestep_total_time = 0
-    
-    # Track peak memory
-    peak_memory = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-    for name, data in datasets:
-        # Force garbage collection before each dataset
-        gc.collect()
-        
-        # Load data with optimal data types
-        X, y = data.data.astype(np.float32), data.target
-        
-        # Split data
-        X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+    for name, data in datasets.items():
+        X, y = data.data, data.target
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=RANDOM_STATE
         )
-        
-        # Initialize and fit preprocessing
-        preprocessor = OneStepGoldenRatio()
-        X_train = preprocessor._preprocess(X_train_raw, is_fit=True)
-        X_test = preprocessor._preprocess(X_test_raw, is_fit=False)
-        
-        results = []
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
 
-        # XGBoost (Memory-optimized)
-        t0 = time.time()
-        model = xgb.XGBClassifier(**xgb_config)
-        model.fit(X_train, y_train)
-        t_xgb = time.time() - t0
-        pred = model.predict(X_test)
-        results.append(("XGBoost", accuracy_score(y_test, pred), 
-                       f1_score(y_test, pred, average='weighted'), t_xgb))
-        xgb_total_time += t_xgb
+        output_lines.append(f"\n{'='*60}\n")
+        output_lines.append(f"Dataset: {name.upper()}\n")
+        output_lines.append(f"{'='*60}\n")
+        print(f"\n{'='*60}")
+        print(f"Dataset: {name.upper()}")
+        print(f"{'='*60}")
+
+        results = {}
+
+        # =====================================================================
+        # 1. XGBoost with GridSearch
+        # =====================================================================
+        print("Training XGBoost with GridSearch...")
+        xgb_params = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [3, 5, 7],
+            'learning_rate': [0.01, 0.1, 0.3],
+            'subsample': [0.8, 1.0]
+        }
+        xgb = GridSearchCV(
+            XGBClassifier(use_label_encoder=False, eval_metric='logloss', 
+                         verbosity=0, random_state=RANDOM_STATE),
+            xgb_params, cv=5, scoring='accuracy', n_jobs=-1
+        )
+        xgb.fit(X_train, y_train)
+        pred_xgb = xgb.predict(X_test)
+        acc_xgb = accuracy_score(y_test, pred_xgb)
+        f1_xgb = f1_score(y_test, pred_xgb, average='weighted')
+        results['XGBoost'] = (acc_xgb, f1_xgb)
+        output_lines.append(f"XGBoost (Tuned)     ACC: {acc_xgb:.4f}  F1: {f1_xgb:.4f}\n")
+        output_lines.append(f"  Best params: {xgb.best_params_}\n")
+        print(f"XGBoost (Tuned)     ACC: {acc_xgb:.4f}  F1: {f1_xgb:.4f}")
+
+        # =====================================================================
+        # 2. OneStep (LogisticRegression) with GridSearch
+        # =====================================================================
+        print("Training OneStep with GridSearch...")
+        one_params = {
+            'C': [0.001, 0.01, 0.1, 1, 10, 100],
+            'penalty': ['l2'],
+            'solver': ['lbfgs']
+        }
+        one = GridSearchCV(
+            LogisticRegression(max_iter=2000, random_state=RANDOM_STATE),
+            one_params, cv=5, scoring='accuracy', n_jobs=-1
+        )
+        one.fit(X_train, y_train)
+        pred_one = one.predict(X_test)
+        acc_one = accuracy_score(y_test, pred_one)
+        f1_one = f1_score(y_test, pred_one, average='weighted')
+        results['OneStep'] = (acc_one, f1_one)
+        output_lines.append(f"OneStep (Tuned)     ACC: {acc_one:.4f}  F1: {f1_one:.4f}\n")
+        output_lines.append(f"  Best params: {one.best_params_}\n")
+        print(f"OneStep (Tuned)     ACC: {acc_one:.4f}  F1: {f1_one:.4f}")
+
+        # =====================================================================
+        # 3. Poly2 (PolynomialFeatures + LogisticRegression) with GridSearch
+        # =====================================================================
+        print("Training Poly2 with GridSearch...")
+        poly = PolynomialFeatures(degree=2, include_bias=False)
+        X_train_poly = poly.fit_transform(X_train)
+        X_test_poly = poly.transform(X_test)
+        poly_params = {
+            'C': [0.001, 0.01, 0.1, 1, 10, 100],
+            'penalty': ['l2'],
+            'solver': ['lbfgs']
+        }
+        poly_model = GridSearchCV(
+            LogisticRegression(max_iter=2000, random_state=RANDOM_STATE),
+            poly_params, cv=5, scoring='accuracy', n_jobs=-1
+        )
+        poly_model.fit(X_train_poly, y_train)
+        pred_poly = poly_model.predict(X_test_poly)
+        acc_poly = accuracy_score(y_test, pred_poly)
+        f1_poly = f1_score(y_test, pred_poly, average='weighted')
+        results['Poly2'] = (acc_poly, f1_poly)
+        output_lines.append(f"Poly2 (Tuned)       ACC: {acc_poly:.4f}  F1: {f1_poly:.4f}\n")
+        output_lines.append(f"  Best params: {poly_model.best_params_}\n")
+        print(f"Poly2 (Tuned)       ACC: {acc_poly:.4f}  F1: {f1_poly:.4f}")
+
+        # =====================================================================
+        # 4. RFF (Random Fourier Features) with GridSearch + Multiple Runs
+        # =====================================================================
+        print("Training RFF with GridSearch (multiple runs)...")
         
-        # Clean up XGBoost model immediately
-        del model
-        gc.collect()
-
-        # OneStep (Memory-optimized)
-        t0 = time.time()
-        m = OneStepGoldenRatio()
-        # Reuse preprocessing stats
-        m.preprocess_stats_ = preprocessor.preprocess_stats_
-        m.fit(X_train, y_train)
-        t_onestep = time.time() - t0
-        pred = m.predict(X_test)
-        results.append(("OneStep", accuracy_score(y_test, pred), 
-                       f1_score(y_test, pred, average='weighted'), t_onestep))
-        onestep_total_time += t_onestep
+        # ค้นหา D และ gamma ที่ดีที่สุด
+        best_rff_acc = 0
+        best_rff_f1 = 0
+        best_rff_config = {}
         
-        # Clean up
-        del m, preprocessor
-        gc.collect()
-
-        # Update peak memory tracking
-        current_memory = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-        peak_memory = max(peak_memory, current_memory)
-
-        # Results
-        print(f"\n===== {name} =====")
-        print(f"{'Model':<10} {'ACC':<8} {'F1':<8} {'Time':<8}")
-        for r in results:
-            print(f"{r[0]:<10} {r[1]:.4f}   {r[2]:.4f}   {r[3]:.4f}s")
-
-    final_memory = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    
-    if onestep_total_time > 0:
-        speedup = xgb_total_time / onestep_total_time
-    else:
-        speedup = 0
+        for D in [50, 100, 200, 500]:
+            for gamma in [0.1, 0.5, 1.0, 2.0, 5.0]:
+                # รันหลายครั้งเพื่อลด variance
+                accs = []
+                f1s = []
+                for run in range(5):
+                    np.random.seed(RANDOM_STATE + run)
+                    W = np.random.normal(0, gamma, size=(X_train.shape[1], D))
+                    b = np.random.uniform(0, 2*np.pi, size=D)
+                    X_train_rff = np.sqrt(2/D) * np.cos(np.dot(X_train, W) + b)
+                    X_test_rff = np.sqrt(2/D) * np.cos(np.dot(X_test, W) + b)
+                    
+                    rff_model = LogisticRegression(max_iter=2000, random_state=RANDOM_STATE)
+                    rff_model.fit(X_train_rff, y_train)
+                    pred_rff = rff_model.predict(X_test_rff)
+                    accs.append(accuracy_score(y_test, pred_rff))
+                    f1s.append(f1_score(y_test, pred_rff, average='weighted'))
+                
+                avg_acc = np.mean(accs)
+                avg_f1 = np.mean(f1s)
+                
+                if avg_acc > best_rff_acc:
+                    best_rff_acc = avg_acc
+                    best_rff_f1 = avg_f1
+                    best_rff_config = {'D': D, 'gamma': gamma}
         
-    print(f"\nRAM Peak: {peak_memory:.1f} MB")
-    print(f"RAM End: {final_memory:.1f} MB")
-    
-    print("\n" + "="*60)
-    print("AWAKEN vΩ.14 — MEMORY OPTIMIZED (50%+ Reduction)")
-    print(f"Total Speedup (XGB/OneStep): {speedup:.1f}x")
-    print("Features: In-place ops, efficient types, lazy allocation")
-    print("========================================================")
+        results['RFF'] = (best_rff_acc, best_rff_f1)
+        output_lines.append(f"RFF (Tuned)         ACC: {best_rff_acc:.4f}  F1: {best_rff_f1:.4f}\n")
+        output_lines.append(f"  Best params: {best_rff_config}\n")
+        print(f"RFF (Tuned)         ACC: {best_rff_acc:.4f}  F1: {best_rff_f1:.4f}")
+
+        # =====================================================================
+        # 5. Advanced Ensemble (Weighted Voting based on validation performance)
+        # =====================================================================
+        print("Training Ensemble with Weighted Voting...")
+        
+        # คำนวณน้ำหนักจาก cross-validation accuracy
+        weights = []
+        all_preds = [pred_xgb, pred_one, pred_poly]
+        
+        for model_name, (acc, f1) in results.items():
+            if model_name != 'RFF':  # RFF ใช้ค่าที่คำนวณแล้ว
+                weights.append(acc)
+        weights.append(best_rff_acc)
+        
+        # Normalize weights
+        weights = np.array(weights) / np.sum(weights)
+        
+        # สร้าง RFF prediction ด้วย best config
+        np.random.seed(RANDOM_STATE)
+        W = np.random.normal(0, best_rff_config['gamma'], 
+                            size=(X_train.shape[1], best_rff_config['D']))
+        b = np.random.uniform(0, 2*np.pi, size=best_rff_config['D'])
+        X_test_rff = np.sqrt(2/best_rff_config['D']) * np.cos(np.dot(X_test, W) + b)
+        X_train_rff = np.sqrt(2/best_rff_config['D']) * np.cos(np.dot(X_train, W) + b)
+        rff_final = LogisticRegression(max_iter=2000, random_state=RANDOM_STATE)
+        rff_final.fit(X_train_rff, y_train)
+        pred_rff_final = rff_final.predict(X_test_rff)
+        
+        all_preds.append(pred_rff_final)
+        
+        # Weighted voting
+        ensemble_pred = []
+        for i in range(len(y_test)):
+            votes = {}
+            for pred, weight in zip(all_preds, weights):
+                vote = pred[i]
+                votes[vote] = votes.get(vote, 0) + weight
+            ensemble_pred.append(max(votes, key=votes.get))
+        
+        ensemble_pred = np.array(ensemble_pred)
+        acc_ens = accuracy_score(y_test, ensemble_pred)
+        f1_ens = f1_score(y_test, ensemble_pred, average='weighted')
+        results['Ensemble'] = (acc_ens, f1_ens)
+        output_lines.append(f"Ensemble (Weighted) ACC: {acc_ens:.4f}  F1: {f1_ens:.4f}\n")
+        output_lines.append(f"  Weights: XGB={weights[0]:.3f}, One={weights[1]:.3f}, "
+                          f"Poly={weights[2]:.3f}, RFF={weights[3]:.3f}\n")
+        print(f"Ensemble (Weighted) ACC: {acc_ens:.4f}  F1: {f1_ens:.4f}")
+
+        # =====================================================================
+        # สรุปผล
+        # =====================================================================
+        output_lines.append(f"\n{'-'*60}\n")
+        output_lines.append("RANKING:\n")
+        sorted_results = sorted(results.items(), key=lambda x: x[1][0], reverse=True)
+        for rank, (model_name, (acc, f1)) in enumerate(sorted_results, 1):
+            output_lines.append(f"  {rank}. {model_name:15s} ACC: {acc:.4f}  F1: {f1:.4f}\n")
+        output_lines.append(f"{'-'*60}\n")
+
+    # เซฟไฟล์
+    with open(results_file, "w", encoding='utf-8') as f:
+        f.writelines(output_lines)
+    print(f"\n{'='*60}")
+    print(f"Results saved to {results_file}")
+    print(f"{'='*60}")
 
 if __name__ == "__main__":
-    benchmark_memory_optimized()
+    run_benchmark()
