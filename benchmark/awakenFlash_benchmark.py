@@ -23,35 +23,41 @@ import tracemalloc
 class OnlineOneStep:
     """
     Online OneStep using Recursive Least Squares (RLS) algorithm
-    - O(d²) updates instead of O(d³) full recomputation
+    - O(d²) updates with vectorized operations
     - Exponential forgetting to handle concept drift
     - Memory-efficient streaming learning
+    - Polynomial features for non-linearity
     """
-    def __init__(self, n_features, n_classes, forgetting_factor=0.99, reg_lambda=1e-3):
+    def __init__(self, n_features, n_classes, forgetting_factor=0.99, reg_lambda=1e-3, 
+                 use_poly=True, poly_degree=2):
         """
         Args:
             n_features: Number of input features
             n_classes: Number of output classes
-            forgetting_factor: λ ∈ (0,1], closer to 1 = more memory, closer to 0 = more adaptation
+            forgetting_factor: λ ∈ (0,1], closer to 1 = more memory
             reg_lambda: L2 regularization strength
+            use_poly: Whether to use polynomial features
+            poly_degree: Degree of polynomial features
         """
         self.n_features = n_features
         self.n_classes = n_classes
         self.forgetting_factor = forgetting_factor
         self.reg_lambda = reg_lambda
+        self.use_poly = use_poly
+        self.poly_degree = poly_degree
         
-        # Initialize weights and inverse covariance matrix
-        # P = (X^T X + λI)^(-1), starts as identity scaled by regularization
-        self.P = np.eye(n_features, dtype=np.float32) / reg_lambda
-        self.W = np.zeros((n_features, n_classes), dtype=np.float32)
-        
+        # Will be initialized after seeing first batch
+        self.P = None
+        self.W = None
         self.scaler = StandardScaler()
+        self.poly = None
         self.is_fitted = False
+        self.d_total = None
         
     def _partial_fit_rls(self, X, y):
         """
-        Recursive Least Squares update with Sherman-Morrison formula
-        Time complexity: O(batch_size × d²) instead of O(d³)
+        Vectorized Recursive Least Squares update
+        Time complexity: O(d³) but with better constants than naive approach
         """
         X = X.astype(np.float32)
         n_samples = X.shape[0]
@@ -63,23 +69,29 @@ class OnlineOneStep:
         # Apply exponential forgetting: P = P / λ
         self.P = self.P / self.forgetting_factor
         
-        # Batch update using Woodbury matrix identity
-        # More stable than individual Sherman-Morrison updates
-        for i in range(n_samples):
-            x = X[i:i+1].T  # Column vector (d, 1)
-            y_i = y_onehot[i:i+1].T  # Column vector (c, 1)
+        # Vectorized batch update using Woodbury identity
+        # P_new = (P^-1 + X^T X)^-1 = P - P X (I + X P X^T)^-1 X^T P
+        
+        PX = self.P @ X.T  # (d, n)
+        XPX = X @ PX  # (n, n)
+        I_n = np.eye(n_samples, dtype=np.float32)
+        
+        try:
+            # Compute (I + XPX)^-1
+            inv_term = np.linalg.solve(I_n + XPX, X @ self.P)  # (n, d)
             
-            # Compute Kalman gain: K = P x / (1 + x^T P x)
-            Px = self.P @ x
-            denominator = 1.0 + (x.T @ Px)[0, 0]
-            K = Px / denominator
+            # Update P: P = P - PX (I + XPX)^-1 X^T P
+            self.P = self.P - PX @ inv_term
             
-            # Update weights: W = W + K (y - x^T W)^T
-            prediction_error = y_i.T - (x.T @ self.W)
-            self.W = self.W + K @ prediction_error
-            
-            # Update inverse covariance: P = P - K x^T P
-            self.P = self.P - K @ (x.T @ self.P)
+            # Update W: W = W + P X^T (y - X W)
+            prediction_error = y_onehot - X @ self.W  # (n, c)
+            self.W = self.W + PX @ prediction_error
+        except np.linalg.LinAlgError:
+            # Fallback to regularized version if singular
+            inv_term = np.linalg.solve(I_n + XPX + 1e-6 * I_n, X @ self.P)
+            self.P = self.P - PX @ inv_term
+            prediction_error = y_onehot - X @ self.W
+            self.W = self.W + PX @ prediction_error
     
     def partial_fit(self, X, y):
         """
@@ -88,15 +100,29 @@ class OnlineOneStep:
         # Fit or update scaler
         if not self.is_fitted:
             X = self.scaler.fit_transform(X)
+            
+            # Initialize polynomial features if needed
+            if self.use_poly:
+                from sklearn.preprocessing import PolynomialFeatures
+                self.poly = PolynomialFeatures(degree=self.poly_degree, include_bias=True)
+                X_features = self.poly.fit_transform(X).astype(np.float32)
+            else:
+                X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
+            
+            # Initialize P and W based on actual feature size
+            self.d_total = X_features.shape[1]
+            self.P = np.eye(self.d_total, dtype=np.float32) / self.reg_lambda
+            self.W = np.zeros((self.d_total, self.n_classes), dtype=np.float32)
             self.is_fitted = True
         else:
             X = self.scaler.transform(X)
-        
-        # Add bias term
-        X_bias = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
+            if self.use_poly:
+                X_features = self.poly.transform(X).astype(np.float32)
+            else:
+                X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
         # Update weights using RLS
-        self._partial_fit_rls(X_bias, y)
+        self._partial_fit_rls(X_features, y)
         
         return self
     
@@ -105,10 +131,13 @@ class OnlineOneStep:
         Predict class probabilities
         """
         X = self.scaler.transform(X)
-        X_bias = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
+        if self.use_poly:
+            X_features = self.poly.transform(X).astype(np.float32)
+        else:
+            X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
         # Compute logits
-        logits = X_bias @ self.W
+        logits = X_features @ self.W
         
         # Softmax for probabilities
         exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
@@ -264,10 +293,12 @@ def benchmark_streaming():
     
     # Initialize models
     online_onestep = OnlineOneStep(
-        n_features=n_features + 1,  # +1 for bias
+        n_features=n_features,
         n_classes=n_classes,
         forgetting_factor=0.98,  # Tuned for concept drift
-        reg_lambda=1e-2
+        reg_lambda=1e-2,
+        use_poly=True,  # Add polynomial features!
+        poly_degree=2
     )
     
     batch_onestep = BatchOneStep(reg_lambda=1e-2)
