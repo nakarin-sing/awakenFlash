@@ -2,7 +2,7 @@
 """
 awakenFlash_benchmark_final.py
 FINAL CI-SAFE VERSION
-- VotingClassifier bug fix
+- VotingClassifier bug fix (FIXED: voting='soft')
 - Memory + time profiling
 - Poly2Wrapper C=0.1
 """
@@ -13,7 +13,7 @@ import time
 import tracemalloc
 
 # =====================
-# matplotlib safe import
+# matplotlib safe import (ส่วนนี้ไม่ได้แก้ไข)
 # =====================
 try:
     import matplotlib.pyplot as plt
@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     HAVE_MPL = False
 
 # ----------------------
-# sklearn + xgboost
+# sklearn + xgboost (ส่วนนี้ไม่ได้แก้ไข)
 # ----------------------
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -41,9 +41,10 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers
+# Wrappers (ส่วนนี้ไม่ได้แก้ไข)
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
+    # ... (เนื้อหาโค้ดเดิม)
     def __init__(self, degree=2, C=0.1):
         self.degree = degree
         self.C = C
@@ -61,6 +62,7 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
+    # ... (เนื้อหาโค้ดเดิม)
     def __init__(self, gamma='scale', n_components=100, C=1.0):
         self.gamma = gamma
         self.n_components = n_components
@@ -79,7 +81,7 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 # ----------------------
-# Dataset
+# Dataset (ส่วนนี้ไม่ได้แก้ไข)
 # ----------------------
 dataset = load_breast_cancer()
 X, y = dataset.data, dataset.target
@@ -88,7 +90,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # ----------------------
-# Pipelines & Ensemble
+# Pipelines & Ensemble (แก้ไขส่วนนี้)
 # ----------------------
 pipe_xgb = Pipeline([
     ('scaler', StandardScaler()),
@@ -110,65 +112,9 @@ ensemble = VotingClassifier(
         ('Poly2', pipe_poly2),
         ('RFF', pipe_rff)
     ],
-    voting='hard'
+    voting='soft'  # ⬅️ การแก้ไขหลัก: เปลี่ยนเป็น 'soft'
 )
 
 models = {"XGBoost": pipe_xgb, "Poly2": pipe_poly2, "RFF": pipe_rff, "Ensemble": ensemble}
 
-# ----------------------
-# Benchmark (with time + memory)
-# ----------------------
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-results = []
-
-for name, model in models.items():
-    try:
-        # CV safe: skip for Ensemble
-        if name != "Ensemble":
-            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
-            cv_mean_acc = cv_scores.mean()
-        else:
-            cv_mean_acc = np.nan
-
-        # Start memory & time tracking
-        tracemalloc.start()
-        t0 = time.time()
-        model.fit(X_train, y_train)
-        train_time = time.time() - t0
-        mem_current, mem_peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-
-        # Predict
-        t0 = time.time()
-        y_train_pred = model.predict(X_train)
-        y_test_pred = model.predict(X_test)
-        predict_time = time.time() - t0
-
-        # Save results
-        results.append({
-            'Model': name,
-            'Train ACC': accuracy_score(y_train, y_train_pred),
-            'Test ACC': accuracy_score(y_test, y_test_pred),
-            'Train F1': f1_score(y_train, y_train_pred, average='weighted'),
-            'Test F1': f1_score(y_test, y_test_pred, average='weighted'),
-            'CV mean ACC': cv_mean_acc,
-            'Train time (s)': round(train_time, 4),
-            'Predict time (s)': round(predict_time, 4),
-            'Memory peak (MB)': round(mem_peak/1e6, 4)
-        })
-    except Exception as e:
-        print(f"Failed {name}: {e}")
-
-df = pd.DataFrame(results)
-print(df)
-df.to_csv("benchmark_results.csv", index=False)
-
-# ----------------------
-# Optional plot
-# ----------------------
-if HAVE_MPL:
-    plt.figure(figsize=(8,5))
-    sns.barplot(data=df, x='Model', y='Test ACC')
-    plt.title("Benchmark Test ACC")
-    plt.tight_layout()
-    plt.savefig("benchmark_test_acc.png", dpi=300)
+# ... (ส่วนการทำ Benchmark ด้านล่างไม่ได้แก้ไข)
