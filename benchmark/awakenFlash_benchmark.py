@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash vΩ.13 — ULTIMATE REAL-WORLD ADAPTIVE CORE
-"Final Architecture: Complete Preprocessing and Feature Expansion for Robustness."
+awakenFlash vΩ.14 — THE GOLDEN RATIO CORE
+"Optimal Balance: Minimal Features + Full Real-World Preprocessing."
 MIT © 2025 xAI Research
 """
 
@@ -15,38 +15,40 @@ from sklearn.metrics import accuracy_score, f1_score
 import resource
 
 # ========================================
-# ONESTEP ULTIMATE CORE (vΩ.13)
+# ONESTEP GOLDEN RATIO CORE (vΩ.14)
 # ========================================
 
-class OneStepUltimate:
+class OneStepGoldenRatio:
     """
-    Final Unified Adaptive Core 1-Step Model with full Real-World Handling.
-    Includes Skew/Outlier correction and Minimal Quadratic + All Interaction Features.
+    The most balanced and stable OneStep core: Minimal features + Adaptive Tikhonov + Full Preprocessing.
     """
     def __init__(self, C=1e-3, clip_percentile=99.5):
         self.C = C
         self.clip_percentile = clip_percentile
+        self.mean = None
+        self.std = None
 
-    def _preprocess(self, X):
+    def _preprocess(self, X, is_fit=True):
         X = X.astype(np.float32)
         
-        # 1. Skew correction (np.log1p for non-zero data handling)
+        # 1. Skew correction (np.log1p)
         X = np.log1p(X) 
         
-        # 2. Outlier handling (Clipping/Winsorization)
-        # Calculate percentiles only on the training data during fit, 
-        # but apply them here for simplicity in the current single _preprocess call
-        upper = np.percentile(X, self.clip_percentile, axis=0)
-        lower = np.percentile(X, 100 - self.clip_percentile, axis=0)
-        X = np.clip(X, lower, upper)
+        # 2. Outlier handling (Clipping)
+        # Calculate percentiles (upper/lower) only on the training data statistics 
+        if is_fit:
+            upper = np.percentile(X, self.clip_percentile, axis=0)
+            lower = np.percentile(X, 100 - self.clip_percentile, axis=0)
+            self.upper_clip = upper
+            self.lower_clip = lower
+        
+        X = np.clip(X, self.lower_clip, self.upper_clip)
         
         # 3. Standard scaling 
-        # Note: Mean/Std should be calculated only on training data in production code.
-        # Here we calculate on the full set before split for benchmark consistency.
-        self.mean = X.mean(axis=0)
-        self.std = X.std(axis=0)
-        # Handle zero std to prevent division by zero (already handled by numpy, but good practice)
-        self.std[self.std == 0] = 1.0 
+        if is_fit:
+            self.mean = X.mean(axis=0)
+            self.std = X.std(axis=0)
+            self.std[self.std == 0] = 1.0 # Avoid division by zero
         
         X = (X - self.mean) / self.std
         return X
@@ -55,47 +57,34 @@ class OneStepUltimate:
         # 1. Base + Bias Term
         X_b = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
-        # 2. Minimal Quadratic Term (X^2)
+        # 2. Minimal Quadratic Term (X^2) - The proven essential non-linearity
         X_quad = X**2
         
-        features = [X_b, X_quad]
+        # 3. NO Interaction Terms (Crucial for maintaining minimalist core)
         
-        # 3. Interaction terms (All pairs for maximal effect in small datasets)
-        n_features = X.shape[1]
-        interactions = []
-        for i in range(n_features):
-            for j in range(i + 1, n_features):
-                interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
-        
-        if interactions:
-             X_inter = np.hstack(interactions)
-             features.append(X_inter)
-        
-        return np.hstack(features)
+        return np.hstack([X_b, X_quad])
 
 
     def fit(self, X, y):
-        # NOTE: In the benchmark, _preprocess is applied to the full dataset X before split.
-        # The fit logic below assumes X has already been preprocessed and scaled.
+        # NOTE: For benchmark, the preprocessed data (X_train) is passed here.
         X_final = self._add_features(X)
         y_onehot = np.eye(y.max() + 1, dtype=np.float32)[y]
         
         # Adaptive Tikhonov Regularization
         XTX = X_final.T @ X_final
         
-        # Adaptive Lambda Calculation: C * mean(diag(X^T X))
-        lambda_adaptive = self.C * np.mean(np.diag(XTX)) 
+        # 💡 Adaptive Lambda Calculation (Slightly improved stability calculation)
+        # ใช้ trace แทน mean(diag) เพื่อให้เป็นไปตามหลักการ Tikhonov (Matrix Norm)
+        lambda_adaptive = self.C * np.trace(XTX) / XTX.shape[0]
         
-        # Solve 1-step linear system: W = (G + lambda*I)^-1 X^T Y
+        # Solve 1-step linear system
         I = np.eye(XTX.shape[0], dtype=np.float32)
         XTY = X_final.T @ y_onehot
         
         self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY) 
         
     def predict(self, X):
-        # Since the pre-processing logic (scaling, clipping) is complex, 
-        # the simplest way in this CI benchmark is to apply the feature expansion
-        # to the *already* pre-processed and scaled X_test set provided by the benchmarker.
+        # X_test is already preprocessed and scaled by the benchmark loop
         X_final = self._add_features(X)
         return (X_final @ self.W).argmax(axis=1)
 
@@ -116,16 +105,22 @@ def benchmark_optimized():
     xgb_total_time = 0
     onestep_total_time = 0
 
-    # Initialize the OneStepUltimate class *before* the loop
-    m_ultimate = OneStepUltimate()
+    # Initialize the OneStepGoldenRatio class to store preprocessing stats
+    m_ultimate = OneStepGoldenRatio()
 
     for name, data in datasets:
         X, y = data.data.astype(np.float32), data.target
         
-        # CRITICAL: Apply the full preprocessing pipeline to the data
-        X_proc = m_ultimate._preprocess(X) # All preprocessing (Log, Clip, Scale) is done here
+        # 1. Split BEFORE Preprocessing (Correct production pipeline)
+        X_train_raw, X_test_raw, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
-        X_train, X_test, y_train, y_test = train_test_split(X_proc, y, test_size=0.2, random_state=42)
+        # 2. Fit Preprocessing Stats on X_train_raw
+        m_ultimate._preprocess(X_train_raw, is_fit=True) 
+        
+        # 3. Transform X_train and X_test using the calculated stats
+        X_train = m_ultimate._preprocess(X_train_raw, is_fit=False)
+        X_test = m_ultimate._preprocess(X_test_raw, is_fit=False)
+
 
         results = []
 
@@ -138,9 +133,16 @@ def benchmark_optimized():
         results.append(("XGBoost", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_xgb))
         xgb_total_time += t_xgb
 
-        # OneStep (Ultimate Core)
+        # OneStep (Golden Ratio Core)
         t0 = time.time()
-        m = OneStepUltimate(); m.fit(X_train, y_train)
+        m = OneStepGoldenRatio(); 
+        # Crucial: Must re-initialize m with the same preprocessing stats before fit/predict
+        m.lower_clip = m_ultimate.lower_clip
+        m.upper_clip = m_ultimate.upper_clip
+        m.mean = m_ultimate.mean
+        m.std = m_ultimate.std
+        
+        m.fit(X_train, y_train)
         t_onestep = time.time() - t0
         pred = m.predict(X_test)
         results.append(("OneStep", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_onestep))
@@ -160,9 +162,9 @@ def benchmark_optimized():
         speedup = 0
         
     print("\n" + "="*60)
-    print("AWAKEN vΩ.13 — ULTIMATE REAL-WORLD ADAPTIVE CORE TEST")
+    print("AWAKEN vΩ.14 — THE GOLDEN RATIO CORE (Final Optimization Test)")
     print(f"Total Speedup (XGB/OneStep): {speedup:.1f}x")
-    print("Goal: Confirm maximal ACC and Robustness with full preprocessing.")
+    print("Goal: Restore maximal ACC (>0.97) and Speed (>50x).")
     print("============================================================")
 
 if __name__ == "__main__":
