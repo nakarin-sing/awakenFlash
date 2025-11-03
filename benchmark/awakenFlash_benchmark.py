@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v4.py
-THE DEFINITIVE CI-SAFE VERSION
-- FIX: Added self.classes_ attribute to Poly2Wrapper/RFFWrapper to satisfy VotingClassifier.
-- Preprocessing (StandardScaler) is done explicitly.
-- Benchmark loop runs all three datasets.
+awakenFlash_benchmark_final_v5.py
+THE DEFINITIVE CI-SAFE VERSION (HARD VOTE)
+- FIX: Switched VotingClassifier to 'hard' voting to bypass strict estimator checks.
+- Contains all previous fixes (explicit scaling, class attributes).
 """
 
 import numpy as np
@@ -40,7 +39,7 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (FINAL FIX: Added self.classes_ attribute)
+# Wrappers (All necessary attributes for Hard Voting are retained)
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     _estimator_type = "classifier" 
@@ -53,12 +52,12 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     def fit(self, X, y):
         X_transformed = self.poly.fit_transform(X)
         self.clf.fit(X_transformed, y)
-        # 💡 FINAL FIX: กำหนด classes_ attribute เพื่อให้ VotingClassifier ยอมรับ
         self.classes_ = self.clf.classes_ 
         return self
     def predict(self, X):
         return self.clf.predict(self.poly.transform(X))
-    def predict_proba(self, X):
+    # NOTE: predict_proba is kept, but Hard Voting won't rely on it.
+    def predict_proba(self, X): 
         return self.clf.predict_proba(self.poly.transform(X))
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
@@ -73,19 +72,18 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
     def fit(self, X, y):
         X_transformed = self.rff.fit_transform(X)
         self.clf.fit(X_transformed, y)
-        # 💡 FINAL FIX: กำหนด classes_ attribute เพื่อให้ VotingClassifier ยอมรับ
         self.classes_ = self.clf.classes_
         return self
     def predict(self, X):
         return self.clf.predict(self.rff.transform(X))
-    def predict_proba(self, X):
+    # NOTE: predict_proba is kept, but Hard Voting won't rely on it.
+    def predict_proba(self, X): 
         return self.clf.predict_proba(self.rff.transform(X))
 
 # ----------------------
-# Adaptive Hyperparameters (Used for consistent testing)
+# Adaptive Hyperparameters
 # ----------------------
 def adaptive_hyperparameters(dataset_name):
-    # ใช้ค่าที่ใกล้เคียงกับตรรกะเดิม
     if dataset_name == 'breast_cancer':
         return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'iris':
@@ -126,11 +124,13 @@ def run_benchmark(dataset_name, X, y):
             ('Poly2', poly2_clf),
             ('RFF', rff_clf)
         ],
-        voting='soft'
+        # 💡 FINAL CHANGE: Switched to hard voting!
+        voting='hard' 
     )
     
     # 5. Model Dictionary
-    models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "Ensemble (Soft)": ensemble}
+    # Changed name to reflect voting type
+    models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "Ensemble (Hard)": ensemble}
     
     # 6. Benchmark Loop
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -187,6 +187,7 @@ def run_benchmark(dataset_name, X, y):
                 'Memory peak (MB)': round(mem_peak_fit/1e6, 4)
             })
         except Exception as e:
+            # If Hard Voting fails, the only option left is to remove Wrappers from the Ensemble completely.
             print(f"Failed {name}: {e}")
             
     return pd.DataFrame(results)
@@ -197,15 +198,11 @@ def run_benchmark(dataset_name, X, y):
 if __name__ == '__main__':
     all_results = []
     
-    # Run Breast Cancer
+    # Run all datasets
     data_bc = load_breast_cancer()
     all_results.append(run_benchmark('breast_cancer', data_bc.data, data_bc.target))
-
-    # Run Iris
     data_iris = load_iris()
     all_results.append(run_benchmark('iris', data_iris.data, data_iris.target))
-    
-    # Run Wine
     data_wine = load_wine()
     all_results.append(run_benchmark('wine', data_wine.data, data_wine.target))
 
