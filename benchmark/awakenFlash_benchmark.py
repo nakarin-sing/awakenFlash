@@ -1,10 +1,9 @@
 import numpy as np
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
-from sklearn.ensemble import VotingClassifier
+from sklearn.metrics import accuracy_score, f1_score, classification_report
 from xgboost import XGBClassifier
 
 # ===============================
@@ -24,7 +23,7 @@ class OneStepWrapper:
         return self.model.predict_proba(X)
 
 class Poly2Wrapper:
-    def __init__(self, C=1.0):
+    def __init__(self, C=0.5):
         self.poly = PolynomialFeatures(degree=2, include_bias=False)
         self.model = LogisticRegression(max_iter=1000, C=C, random_state=42)
 
@@ -39,8 +38,7 @@ class Poly2Wrapper:
         return self.model.predict_proba(self.poly.transform(X))
 
 class RFFWrapper:
-    # Random Fourier Features (simplified)
-    def __init__(self, gamma=0.5, n_components=500):
+    def __init__(self, gamma=0.5, n_components=100):
         self.gamma = gamma
         self.n_components = n_components
         self.model = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
@@ -63,12 +61,19 @@ class RFFWrapper:
         return self.model.predict_proba(self.transform(X))
 
 # ===============================
-# Weighted Ensemble
+# Weighted Ensemble (by validation accuracy)
 # ===============================
-def weighted_ensemble_predict(probas_list, weights=None):
-    probas_array = np.array(probas_list)  # shape: [n_models, n_samples, n_classes]
-    if weights is None:
-        weights = np.ones(probas_array.shape[0])
+def weighted_ensemble_predict(models, X_val, y_val, X_test):
+    # Compute weights from validation accuracy
+    weights = []
+    probas_list = []
+    for model in models:
+        pred_val = model.predict(X_val)
+        acc_val = accuracy_score(y_val, pred_val)
+        weights.append(acc_val)
+        probas_list.append(model.predict_proba(X_test))
+    weights = np.array(weights) / sum(weights)
+    probas_array = np.array(probas_list)
     weighted_avg = np.tensordot(weights, probas_array, axes=(0,0))
     return np.argmax(weighted_avg, axis=1)
 
@@ -82,63 +87,43 @@ def run_benchmark():
         "wine": load_wine()
     }
 
-    results = {}
-
     for name, dataset in datasets.items():
         X, y = dataset.data, dataset.target
-
-        # Split & scale properly (no leakage)
+        # Split train/test (70/30)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
+        # Split a small validation set from train for ensemble weights
+        X_train_final, X_val, y_train_final, y_val = train_test_split(X_train_scaled, y_train, test_size=0.2, random_state=42, stratify=y_train)
+
         # Initialize models
         xgb = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
         ones = OneStepWrapper()
         poly = Poly2Wrapper(C=0.5)
-        rff = RFFWrapper(gamma=0.5, n_components=500)
+        rff = RFFWrapper(gamma=0.5, n_components=100)
 
         models = [("XGBoost", xgb), ("OneStep", ones), ("Poly2", poly), ("RFF", rff)]
 
         # Fit models
         for _, model in models:
-            model.fit(X_train_scaled, y_train)
+            model.fit(X_train_final, y_train_final)
 
-        # Predict & metrics
-        model_preds = {}
-        model_probas = []
-        for name_m, model in models:
+        print(f"\n===== Dataset: {name} =====")
+        for mname, model in models:
             pred = model.predict(X_test_scaled)
-            prob = model.predict_proba(X_test_scaled)
-            model_preds[name_m] = {
-                "ACC": accuracy_score(y_test, pred),
-                "F1": f1_score(y_test, pred, average='weighted'),
-                "Report": classification_report(y_test, pred, zero_division=0)
-            }
-            model_probas.append(prob)
+            train_pred = model.predict(X_train_final)
+            acc_train = accuracy_score(y_train_final, train_pred)
+            acc_test = accuracy_score(y_test, pred)
+            f1 = f1_score(y_test, pred, average='weighted')
+            print(f"{mname}: Train ACC={acc_train:.4f}, Test ACC={acc_test:.4f}, F1={f1:.4f}")
 
-        # Weighted ensemble
-        ensemble_pred = weighted_ensemble_predict(model_probas)
-        model_preds["Ensemble"] = {
-            "ACC": accuracy_score(y_test, ensemble_pred),
-            "F1": f1_score(y_test, ensemble_pred, average='weighted'),
-            "Report": classification_report(y_test, ensemble_pred, zero_division=0)
-        }
-
-        results[name] = model_preds
-
-    # Save results
-    import os
-    os.makedirs("benchmark_results", exist_ok=True)
-    with open("benchmark_results/results.txt", "w") as f:
-        for dname, res in results.items():
-            f.write(f"===== Dataset: {dname} =====\n")
-            for mname, metrics in res.items():
-                f.write(f"{mname}: ACC={metrics['ACC']:.4f}, F1={metrics['F1']:.4f}\n")
-            f.write("\n")
-    print("Results saved to benchmark_results/results.txt")
-    return results
+        # Ensemble
+        ensemble_pred = weighted_ensemble_predict([xgb, ones, poly, rff], X_val, y_val, X_test_scaled)
+        acc_ens = accuracy_score(y_test, ensemble_pred)
+        f1_ens = f1_score(y_test, ensemble_pred, average='weighted')
+        print(f"Ensemble (weighted): Test ACC={acc_ens:.4f}, F1={f1_ens:.4f}")
 
 # ===============================
 # Run benchmark
