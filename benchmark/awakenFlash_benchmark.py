@@ -191,8 +191,11 @@ def benchmark_hyper():
         print(f"\n===== {name} =====")
         print(f"{'Model':<12} {'ACC':<8} {'F1':<8} {'Time':<8}")
         for r in results:
-            print(f"{r[0]:<12} {r[1]:.4f}   {r[2]:.4ff}   {r[3]:.4f}s")
-
+            # **************************************************
+            # บรรทัดแก้ไข: แก้ไข format specifier จาก .4ff เป็น .4f
+            # **************************************************
+            print(f"{r[0]:<12} {r[1]:.4f}   {r[2]:.4f}   {r[3]:.4f}s")
+            
     print(f"\nRAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
     if onestep_total_time > 0:
