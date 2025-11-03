@@ -10,22 +10,40 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: |
+
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - env:
+          # ติดตั้ง dependencies หลัก
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # ป้องกันพัง: ถ้า requests ไม่มี ให้ติดตั้งเพิ่ม
+          python - <<'PYCODE'
+import importlib.util, subprocess, sys
+for pkg in ["requests", "pandas", "numpy", "scikit-learn", "xgboost"]:
+    if importlib.util.find_spec(pkg) is None:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+PYCODE
+
+      - name: Run benchmark
+        env:
           PYTHONPATH: ${{ github.workspace }}
           CI: true
         run: |
           mkdir -p benchmark_results
-          python benchmark/awakenFlash_benchmark.py  # แสดงผลลง log เลย
-      - uses: actions/upload-artifact@v4
+          echo "🚀 Starting benchmark..."
+          python benchmark/awakenFlash_benchmark.py
+          echo "✅ Benchmark finished."
+
+      - name: Upload results
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: awakenFlash-benchmark-results
           path: benchmark_results/
