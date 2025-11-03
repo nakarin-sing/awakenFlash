@@ -212,9 +212,14 @@ def generate_streaming_data(n_chunks=12, samples_per_chunk=10000, n_features=20,
             shift=0.0,
             scale=1.0,
             shuffle=True,
-            random_state=random_state + i,
-            cluster_std=cluster_std
+            random_state=random_state + i
         )
+        
+        # Simulate concept drift by adding noise
+        if concept_drift and i > 0:
+            drift_factor = i * 0.1
+            noise = np.random.normal(0, cluster_std - 1.0, X.shape)
+            X = X + noise
         
         # Split into train/test
         X_train, X_test, y_train, y_test = train_test_split(
