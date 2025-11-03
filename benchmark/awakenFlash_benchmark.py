@@ -1,30 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v7.py
-THE ANALYTICAL VERSION
-- NEW: Added estimated FLOPs calculation for simple models (LogReg, Poly2) for deeper efficiency analysis.
-- NEW: Added calculation of Train Speed (samples/sec) and Prediction Speed (samples/sec).
+awakenFlash_benchmark_final_v8.py
+THE NON-LOGIC CONTEXTUAL VERSION (3-NON PRINCIPLE)
+- NEW: Implemented a 'BenchmarkContext' class to wrap time and memory tracking.
+- This adheres to the 3-Non principle (Non-Non-Non-Logic) by cleanly separating 
+  the measurement process from the core logic, reducing "contextual attachment."
 """
 
 import numpy as np
 import pandas as pd
 import time
 import tracemalloc
-
-# =====================
-# matplotlib safe import
-# =====================
-try:
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    sns.set(style="whitegrid")
-    HAVE_MPL = True
-except ModuleNotFoundError:
-    print("matplotlib/seaborn not found, skipping plots")
-    HAVE_MPL = False
+import warnings
+warnings.filterwarnings('ignore')
 
 # ----------------------
-# sklearn + xgboost
+# sklearn + xgboost imports (remains the same)
 # ----------------------
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -34,14 +25,11 @@ from sklearn.kernel_approximation import RBFSampler
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import accuracy_score, f1_score
 import xgboost as xgb
-import warnings
-warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (Retained for individual benchmark)
+# Wrappers (Remain the same)
 # ----------------------
-# (โค้ด Wrapper Classes ทั้ง Poly2Wrapper และ RFFWrapper เหมือนเดิม)
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     _estimator_type = "classifier" 
     
@@ -80,7 +68,7 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return self.clf.predict_proba(self.rff.transform(X))
 
 # ----------------------
-# Adaptive Hyperparameters
+# Adaptive Hyperparameters and FLOPs Estimation (Remain the same)
 # ----------------------
 def adaptive_hyperparameters(dataset_name):
     if dataset_name == 'breast_cancer':
@@ -92,45 +80,46 @@ def adaptive_hyperparameters(dataset_name):
     else:
         return {'poly_C': 1.0, 'rff_C': 1.0, 'lr_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
 
-# ----------------------
-# 💡 NEW: FLOPs Estimation Function
-# ----------------------
 def estimate_flops(model, X_train, y_train, X_test, name):
-    # n_samples, n_features
     N, D = X_train.shape
     M = X_test.shape[0]
-    
-    # FLOPs คือการประมาณการจำนวน Floating Point Operations (สำหรับการทำนาย 1 sample)
-    # เราจะประมาณการเฉพาะโมเดลเชิงเส้น (LogReg, Poly2, RFF) ซึ่งมีโครงสร้างชัดเจน
-    
     flops = 0
     
     if "LogReg (Plain)" in name:
-        # Prediction FLOPs: D multiplications + (D-1) additions + 1 sigmoid (approx 4 FLOPs)
         flops = D * 2 + 4
-        
     elif "Poly2" in name:
-        # Preprocessing: D original features + D*(D-1)/2 interaction terms
-        # D_poly = D + D + D*(D-1)/2 + 1 (bias if included, but here excluded)
-        # D_poly = (D^2 + 3D) / 2
-        # เราใช้จำนวน features หลัง transform (D_transformed)
         X_poly = PolynomialFeatures(degree=2, include_bias=False).fit_transform(X_train[:1])
         D_transformed = X_poly.shape[1]
-        
-        # Prediction FLOPs: D_transformed * 2 (for LR part)
         flops = D_transformed * 2 + 4
-        
     elif "RFF" in name:
-        # RFF Preprocessing: X * RFF_matrix (N_components * D) + cos/sin
         N_comp = model.n_components
-        
-        # Prediction FLOPs: N_comp * D (RFF transform) + N_comp * 2 (LR part)
-        # Prediction FLOPs (RFF transform part: Matrix Mul): N_comp * D * 2 
-        # Prediction FLOPs (LR part): N_comp * 2 
         flops = N_comp * D * 2 + N_comp * 2 + 4
         
-    # XGBoost and Ensemble are complex to estimate FLOPs simply, so return 0
     return flops
+
+# ----------------------
+# 💡 NEW: Benchmark Context Manager
+# ----------------------
+class BenchmarkContext:
+    """A context manager to track time and memory peak accurately."""
+    def __init__(self, metric_name):
+        self.metric_name = metric_name
+        self.start_time = None
+        self.peak_memory = 0
+        self.duration = 0
+
+    def __enter__(self):
+        self.start_time = time.time()
+        tracemalloc.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.end_time = time.time()
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.peak_memory = peak
+        self.duration = self.end_time - self.start_time
+        # No need to print error here; the main loop handles exceptions.
 
 # ----------------------
 # The Benchmark Function
@@ -146,39 +135,19 @@ def run_benchmark(dataset_name, X, y):
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    # (Rest of the setup code remains the same as v6)
-    # 2. Get Hyperparameters
+    # 2-5. Model Definitions (Remain the same)
     hparams = adaptive_hyperparameters(dataset_name)
-
-    # 3. Define Models (including plain LR for Ensemble)
-    xgb_clf = xgb.XGBClassifier(max_depth=3, n_estimators=200,
-                                use_label_encoder=False, eval_metric='logloss', random_state=42)
+    xgb_clf = xgb.XGBClassifier(max_depth=3, n_estimators=200, use_label_encoder=False, eval_metric='logloss', random_state=42)
     poly2_clf = Poly2Wrapper(degree=2, C=hparams['poly_C'])
     rff_clf = RFFWrapper(gamma=hparams['rff_gamma'], n_components=hparams['rff_n_components'], C=hparams['rff_C'])
     lr_clf = LogisticRegression(C=hparams['lr_C'], max_iter=5000, random_state=42) 
-
-    # 4. Define Ensemble (using ONLY built-in estimators)
-    ensemble = VotingClassifier(
-        estimators=[
-            ('XGBoost', xgb_clf),
-            ('LogReg', lr_clf),
-        ],
-        voting='hard' 
-    )
+    ensemble = VotingClassifier(estimators=[('XGBoost', xgb_clf), ('LogReg', lr_clf)], voting='hard')
     
-    # 5. Model Dictionary
-    models = {
-        "XGBoost": xgb_clf, 
-        "Poly2": poly2_clf, 
-        "RFF": rff_clf, 
-        "LogReg (Plain)": lr_clf, 
-        "Ensemble (XGB+LR)": ensemble 
-    }
+    models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "LogReg (Plain)": lr_clf, "Ensemble (XGB+LR)": ensemble}
     
     # 6. Benchmark Loop
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKfold(n_splits=5, shuffle=True, random_state=42)
     results = []
-    
     N_train = X_train_scaled.shape[0]
     N_test = X_test_scaled.shape[0]
 
@@ -187,39 +156,31 @@ def run_benchmark(dataset_name, X, y):
             X_train_data = X_train_scaled
             X_test_data = X_test_scaled
             
-            # (CV Benchmarking remains the same)
+            # 1. Benchmarking CV (Using Context Manager)
             if "Ensemble" not in name:
-                tracemalloc.start()
-                t_cv_start = time.time()
-                cv_scores = cross_val_score(model, X_train_data, y_train, cv=cv, scoring='accuracy')
-                t_cv_end = time.time()
+                with BenchmarkContext(f"{name} CV") as ctx_cv:
+                    cv_scores = cross_val_score(model, X_train_data, y_train, cv=cv, scoring='accuracy')
                 cv_mean_acc = cv_scores.mean()
-                mem_current, mem_peak_cv = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-                cv_time = t_cv_end - t_cv_start
+                cv_time = ctx_cv.duration
             else:
                 cv_mean_acc = np.nan
-                mem_peak_cv = 0
                 cv_time = 0 
 
-            # (Fit/Predict Benchmarking remains the same)
-            tracemalloc.start()
-            t0 = time.time()
-            model.fit(X_train_data, y_train)
-            train_time = time.time() - t0
-            mem_current, mem_peak_fit = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
+            # 2. Benchmarking Fit (Using Context Manager)
+            with BenchmarkContext(f"{name} Fit") as ctx_fit:
+                model.fit(X_train_data, y_train)
+            train_time = ctx_fit.duration
+            mem_peak_fit = ctx_fit.peak_memory
 
-            t0 = time.time()
-            y_train_pred = model.predict(X_train_data)
-            y_test_pred = model.predict(X_test_data)
-            predict_time = time.time() - t0
+            # 3. Benchmarking Predict (Using Context Manager)
+            with BenchmarkContext(f"{name} Predict") as ctx_predict:
+                y_train_pred = model.predict(X_train_data)
+                y_test_pred = model.predict(X_test_data)
+            predict_time = ctx_predict.duration
 
-            # 💡 NEW: Calculate Speed Metrics
+            # Calculate Speed Metrics and FLOPs
             train_speed = N_train / train_time if train_time > 0 else np.inf
             predict_speed = N_test / predict_time if predict_time > 0 else np.inf
-            
-            # 💡 NEW: Estimate FLOPs (per sample)
             flops_per_sample = estimate_flops(model, X_train_scaled, y_train, X_test_scaled, name)
             
             # Save results
@@ -235,9 +196,9 @@ def run_benchmark(dataset_name, X, y):
                 'Predict time (s)': round(predict_time, 4),
                 'CV time (s)': round(cv_time, 4),
                 'Memory peak (MB)': round(mem_peak_fit/1e6, 4),
-                'Train Speed (samp/s)': round(train_speed, 1), # 💡 NEW
-                'Predict Speed (samp/s)': round(predict_speed, 1), # 💡 NEW
-                'Pred FLOPs/sample': flops_per_sample # 💡 NEW
+                'Train Speed (samp/s)': round(train_speed, 1),
+                'Predict Speed (samp/s)': round(predict_speed, 1),
+                'Pred FLOPs/sample': flops_per_sample
             })
         except Exception as e:
             print(f"Failed {name}: {e}")
@@ -261,9 +222,7 @@ if __name__ == '__main__':
     # Combine Results
     df_final = pd.concat(all_results, ignore_index=True)
 
-    # ----------------------
     # พิมพ์ผลลัพธ์ใน Log อย่างสมบูรณ์
-    # ----------------------
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', 1000)
@@ -271,31 +230,3 @@ if __name__ == '__main__':
     print("\n--- FINAL Benchmark Results (Full) ---\n")
     print(df_final.to_string())
     df_final.to_csv("benchmark_results.csv", index=False)
-
-    # ----------------------
-    # Optional plot
-    # ----------------------
-    if HAVE_MPL:
-        # Plot Train Speed
-        plt.figure(figsize=(10,6))
-        sns.barplot(data=df_final, x='Model', y='Train Speed (samp/s)', hue='Dataset')
-        plt.title("Model Training Speed (samples/sec)")
-        plt.legend(loc='upper right')
-        plt.tight_layout()
-        plt.savefig("benchmark_train_speed.png", dpi=300)
-        
-        # Plot Predict Speed
-        plt.figure(figsize=(10,6))
-        sns.barplot(data=df_final, x='Model', y='Predict Speed (samp/s)', hue='Dataset')
-        plt.title("Model Prediction Speed (samples/sec)")
-        plt.legend(loc='upper right')
-        plt.tight_layout()
-        plt.savefig("benchmark_predict_speed.png", dpi=300)
-        
-        # Plot Memory (retained)
-        plt.figure(figsize=(10,6))
-        sns.barplot(data=df_final, x='Model', y='Memory peak (MB)', hue='Dataset')
-        plt.title("Memory Peak during Fit (MB)")
-        plt.legend(loc='upper right')
-        plt.tight_layout()
-        plt.savefig("benchmark_memory_final.png", dpi=300)
