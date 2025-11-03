@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v2.py
-FINAL CI-SAFE VERSION (FIXED PIPELINE ERROR)
-- FIX: Removed Pipelines from VotingClassifier (AttributeError: property '_estimator_type')
-- Preprocessing (StandardScaler) is now done explicitly before the benchmark loop.
-- VotingClassifier uses 'soft' voting with direct estimators.
+awakenFlash_benchmark_final_v3.py
+FINAL CI-SAFE VERSION (FIXED WRAPPER TYPE CHECK)
+- FIX: _estimator_type is now a class attribute in Wrappers to satisfy VotingClassifier.
+- Preprocessing (StandardScaler) is done explicitly.
+- Benchmark loop runs all three datasets.
 """
 
 import numpy as np
@@ -21,7 +21,6 @@ try:
     sns.set(style="whitegrid")
     HAVE_MPL = True
 except ModuleNotFoundError:
-    # พิมพ์ข้อความแจ้งเตือนเท่านั้น
     print("matplotlib/seaborn not found, skipping plots")
     HAVE_MPL = False
 
@@ -41,19 +40,19 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers
+# Wrappers (FIXED: _estimator_type is now a class attribute)
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
+    # **FINAL FIX:** ใช้ Class Attribute เพื่อให้ VotingClassifier ตรวจสอบได้ทันที
+    _estimator_type = "classifier" 
+    
     def __init__(self, degree=2, C=0.1):
         self.degree = degree
         self.C = C
-        # PolyFit only once (Assumption: data from the same dataset is used)
         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit poly features first (only if needed, but not done here due to scaled data)
-        # Note: Since the input X is already scaled, we only fit the final LR model.
-        # For generality, we still transform the data in fit/predict.
+        # Fit poly features and then the classifier
         X_transformed = self.poly.fit_transform(X)
         self.clf.fit(X_transformed, y)
         return self
@@ -61,11 +60,11 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         return self.clf.predict(self.poly.transform(X))
     def predict_proba(self, X):
         return self.clf.predict_proba(self.poly.transform(X))
-    @property
-    def _estimator_type(self):
-        return "classifier"
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
+    # **FINAL FIX:** ใช้ Class Attribute เพื่อให้ VotingClassifier ตรวจสอบได้ทันที
+    _estimator_type = "classifier"
+
     def __init__(self, gamma='scale', n_components=100, C=1.0):
         self.gamma = gamma
         self.n_components = n_components
@@ -73,7 +72,7 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         self.rff = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit RFF features
+        # Fit RFF features and then the classifier
         X_transformed = self.rff.fit_transform(X)
         self.clf.fit(X_transformed, y)
         return self
@@ -81,22 +80,21 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return self.clf.predict(self.rff.transform(X))
     def predict_proba(self, X):
         return self.clf.predict_proba(self.rff.transform(X))
-    @property
-    def _estimator_type(self):
-        return "classifier"
 
 # ----------------------
-# Adaptive Hyperparameters (Adapted from previous logic)
+# Adaptive Hyperparameters (Used for consistent testing)
 # ----------------------
 def adaptive_hyperparameters(dataset_name):
     if dataset_name == 'breast_cancer':
-        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 0.0016, 'rff_n_components': 100}
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'iris':
-        return {'poly_C': 0.1, 'rff_C': 0.1, 'rff_gamma': 1.25, 'rff_n_components': 52}
+        # ใช้ C=0.1 สำหรับ Iris (ตามตรรกะเดิม)
+        return {'poly_C': 0.1, 'rff_C': 0.1, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'wine':
-        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 0.056, 'rff_n_components': 50}
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     else:
         return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
+
 
 # ----------------------
 # The Benchmark Function
@@ -104,7 +102,7 @@ def adaptive_hyperparameters(dataset_name):
 def run_benchmark(dataset_name, X, y):
     print(f"\n--- Running Benchmark for {dataset_name.upper()} ---")
     
-    # 1. Split and Scale Data Explicitly
+    # 1. Split and Scale Data Explicitly (FIX: Separating Preprocessing)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=42
     )
@@ -149,6 +147,7 @@ def run_benchmark(dataset_name, X, y):
                 # Start memory & time tracking (for CV)
                 tracemalloc.start()
                 t_cv_start = time.time()
+                # cross_val_score ใช้โมเดลโดยตรงกับข้อมูลที่สเกลแล้ว
                 cv_scores = cross_val_score(model, X_train_data, y_train, cv=cv, scoring='accuracy')
                 t_cv_end = time.time()
                 cv_mean_acc = cv_scores.mean()
@@ -215,7 +214,7 @@ if __name__ == '__main__':
     df_final = pd.concat(all_results, ignore_index=True)
 
     # ----------------------
-    # FIX 3: ส่วนที่แสดงผลลัพธ์ใน Log อย่างสมบูรณ์
+    # FIX: ส่วนที่แสดงผลลัพธ์ใน Log อย่างสมบูรณ์
     # ----------------------
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
@@ -232,7 +231,7 @@ if __name__ == '__main__':
         # Plot Test ACC
         plt.figure(figsize=(10,6))
         sns.barplot(data=df_final, x='Model', y='Test ACC', hue='Dataset')
-        plt.title("Benchmark Test ACC by Dataset (Fixed Version)")
+        plt.title("Benchmark Test ACC by Dataset (Final Version)")
         plt.legend(loc='lower right')
         plt.tight_layout()
         plt.savefig("benchmark_test_acc_final.png", dpi=300)
@@ -244,4 +243,3 @@ if __name__ == '__main__':
         plt.legend(loc='upper right')
         plt.tight_layout()
         plt.savefig("benchmark_memory_final.png", dpi=300)
-
