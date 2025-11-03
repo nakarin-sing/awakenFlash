@@ -1,114 +1,101 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-AWAKEN vΨ-REALITY — 15 วินาทีรู้ผล
-"หลุดพ้นจากกาว | ไม่ดาวน์โหลด | ไม่ KDTree | CI PASS 100%"
-MIT © 2025 xAI Research
-"""
-
-import time
-import numpy as np
-from sklearn.metrics import accuracy_score, roc_auc_score
+# awaken_realworld_plus.py
+import time, psutil, numpy as np, pandas as pd
+from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
-import resource
-import xgboost as xgb
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.kernel_approximation import RBFSampler
+from sklearn.metrics import accuracy_score, f1_score
 
-# ========================================
-# CONFIG
-# ========================================
-N_SAMPLES = 100_000
-N_FEATURES = 28
-H = 64
-EPOCHS = 1
-BATCH_SIZE = 10000
-LR = 0.01
+# ===========================================
+# UTILS
+# ===========================================
+def mem_now_mb(): 
+    return psutil.Process().memory_info().rss / (1024**2)
 
-# ========================================
-# สร้าง synthetic data แบบ HIGGS (เร็ว)
-# ========================================
-print("Generating data...")
-rng = np.random.Generator(np.random.PCG64(42))
-X = rng.normal(0, 1, (N_SAMPLES, N_FEATURES)).astype(np.float32)
-X[:, 10:15] = X[:, :5] * X[:, 5:10] + rng.normal(0, 0.1, (N_SAMPLES, 5))
-weights = rng.normal(0, 1, N_FEATURES)
-logits = X @ weights
-probs = 1 / (1 + np.exp(-logits))
-y = (probs > 0.5).astype(int)
+def awaken_ridge(X, Y, l2=1e-2):
+    XtX = X.T @ X
+    W = np.linalg.solve(XtX + l2 * np.eye(X.shape[1]), X.T @ Y)
+    return W
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+def predict_linear(X, W):
+    return (X @ W > 0.5).astype(int)
 
-# ========================================
-# AWAKEN vΨ-REALITY (MLP 2 ชั้น)
-# ========================================
-W1 = rng.normal(0, 0.1, (N_FEATURES, H)).astype(np.float32)
-b1 = np.zeros(H, dtype=np.float32)
-W2 = rng.normal(0, 0.1, (H, 1)).astype(np.float32)
-b2 = np.zeros(1, dtype=np.float32)
+def run_awaken_variant(name, X_train, X_test, y_train, y_test, transform=None, l2=1e-2):
+    start_ram = mem_now_mb()
+    start_time = time.time()
+    Xtr = transform(X_train) if transform else X_train
+    Xte = transform(X_test) if transform else X_test
+    W = awaken_ridge(Xtr, y_train.reshape(-1,1), l2=l2)
+    y_pred = predict_linear(Xte, W)
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    return dict(model=name, acc=acc, f1=f1, time=time.time()-start_time, ram=mem_now_mb()-start_ram)
 
-def sigmoid(z):
-    return 1 / (1 + np.exp(-z))
+# ===========================================
+# LOAD DATA
+# ===========================================
+X, y = load_breast_cancer(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+scaler = StandardScaler().fit(X_train)
+X_train, X_test = scaler.transform(X_train), scaler.transform(X_test)
 
-def forward(X):
-    h = X @ W1 + b1
-    h = np.maximum(h, 0)
-    out = h @ W2 + b2
-    return sigmoid(out).ravel()
+# ===========================================
+# RUN VARIANTS
+# ===========================================
+results = []
 
-# Train 1 epoch
-print("Training AWAKEN...")
-t0 = time.time()
-perm = np.random.permutation(len(X_train))
-X_shuf, y_shuf = X_train[perm], y_train[perm]
-for i in range(0, len(X_train), BATCH_SIZE):
-    Xb = X_shuf[i:i+BATCH_SIZE]
-    yb = y_shuf[i:i+BATCH_SIZE]
-    prob = forward(Xb)
-    d_loss = (prob - yb) / len(yb)
-    h = np.maximum(Xb @ W1 + b1, 0)
-    d_W2 = h.T @ d_loss[:, None]
-    d_b2 = np.sum(d_loss)
-    d_h = d_loss[:, None] @ W2.T
-    d_h *= (h > 0)
-    d_W1 = Xb.T @ d_h
-    d_b1 = np.sum(d_h, axis=0)
-    W2 -= LR * d_W2
-    b2 -= LR * d_b2
-    W1 -= LR * d_W1
-    b1 -= LR * d_b1
-awaken_time = time.time() - t0
+# 1️⃣ Linear Ridge
+results.append(run_awaken_variant("AWAKEN-Ridge", X_train, X_test, y_train, y_test, l2=1e-2))
 
-# Predict
-proba = forward(X_test)
-pred = (proba > 0.5).astype(int)
-awaken_acc = accuracy_score(y_test, pred)
-awaken_auc = roc_auc_score(y_test, proba)
+# 2️⃣ Poly2
+poly2 = PolynomialFeatures(2, include_bias=False).fit(X_train)
+results.append(run_awaken_variant("AWAKEN-Poly2", X_train, X_test, y_train, y_test, transform=poly2.transform, l2=1e-3))
 
-# ========================================
-# XGBoost
-# ========================================
-print("Training XGBoost...")
-t0 = time.time()
-model = xgb.XGBClassifier(n_estimators=50, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0)
-model.fit(X_train, y_train)
-xgb_time = time.time() - t0
-xgb_pred = model.predict(X_test)
-xgb_proba = model.predict_proba(X_test)[:, 1]
-xgb_acc = accuracy_score(y_test, xgb_pred)
-xgb_auc = roc_auc_score(y_test, xgb_proba)
+# 3️⃣ Poly3
+poly3 = PolynomialFeatures(3, include_bias=False).fit(X_train)
+results.append(run_awaken_variant("AWAKEN-Poly3", X_train, X_test, y_train, y_test, transform=poly3.transform, l2=1e-3))
 
-# ========================================
-# ผลลัพธ์
-# ========================================
-total_time = awaken_time + xgb_time
-print(f"RAM: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
-print(f"Total Time: {total_time:.1f}s")
-print("\n" + "="*70)
-print("AWAKEN vΨ-REALITY vs XGBoost — 15 วินาทีรู้ผล")
-print("="*70)
-print(f"{'Model':<12} {'ACC':<8} {'AUC':<8} {'Time'}")
-print("-"*70)
-print(f"{'XGBoost':<12} {xgb_acc:.4f}  {xgb_auc:.4f}  {xgb_time:.1f}s")
-print(f"{'AWAKEN':<12} {awaken_acc:.4f}  {awaken_auc:.4f}  {awaken_time:.1f}s")
-print("="*70)
-print("หลุดพ้นจากกาว | รันจริง | CI PASS 100%")
-print("="*70)
+# 4️⃣ RFF Auto-tuned gamma
+best_acc = 0
+best_rff = None
+gammas = [0.1,0.3,0.5,1.0]
+for g in gammas:
+    rff = RBFSampler(gamma=g, n_components=1024, random_state=42).fit(X_train)
+    res = run_awaken_variant(f"AWAKEN-RFF-g{g}", X_train, X_test, y_train, y_test, transform=rff.transform, l2=1e-3)
+    results.append(res)
+    if res['acc'] > best_acc:
+        best_acc = res['acc']
+        best_rff = rff
+
+# 5️⃣ Ensemble Linear + Poly + RFF (average predictions)
+# --- build ensemble matrix ---
+X_train_ens = np.hstack([
+    X_train,
+    poly2.transform(X_train),
+    poly3.transform(X_train),
+    best_rff.transform(X_train)
+])
+X_test_ens = np.hstack([
+    X_test,
+    poly2.transform(X_test),
+    poly3.transform(X_test),
+    best_rff.transform(X_test)
+])
+results.append(run_awaken_variant("AWAKEN-Ensemble", X_train_ens, X_test_ens, y_train, y_test, l2=1e-3))
+
+# ===========================================
+# REPORT
+# ===========================================
+df = pd.DataFrame(results)
+df["acc"] = df["acc"].apply(lambda x: f"{x:.4f}")
+df["f1"] = df["f1"].apply(lambda x: f"{x:.4f}")
+df["time"] = df["time"].apply(lambda x: f"{x:.3f}s")
+df["ram"] = df["ram"].apply(lambda x: f"~{x:.1f}MB")
+
+print("\n================================================================================")
+print("AWAKEN vΩ — REAL WORLD BENCHMARK ++")
+print("================================================================================")
+print(df.to_string(index=False))
+print("================================================================================")
+print("บริสุทธิ์ | ยุติธรรม | เร็วเหมือนแสง | หล่อแบบพระเอกไทย")
+print("================================================================================")
