@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark_CI_safe.py
-FINAL STABLE VERSION: Fixes VotingClassifier error in cross_val_score.
-- ใช้ C=0.1 (Regularization) ใน Poly2 เพื่อแก้ Overfitting
+FINAL STABLE VERSION:
+- VotingClassifier รัน cross_val_score ได้
+- Poly2Wrapper ใช้ C=0.1 แก้ overfitting
+- CI-safe plot (matplotlib/seaborn optional)
 """
 
 import numpy as np
 import pandas as pd
+import warnings
+warnings.filterwarnings('ignore')
 
 # =====================
-# matplotlib safe import (รวม seaborn)
+# matplotlib safe import
 # =====================
 try:
     import matplotlib.pyplot as plt
@@ -32,8 +36,6 @@ from sklearn.kernel_approximation import RBFSampler
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import accuracy_score, f1_score
 import xgboost as xgb
-import warnings
-warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
@@ -46,7 +48,6 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit Poly features and then Logistic Regression
         self.clf.fit(self.poly.fit_transform(X), y)
         return self
     def predict(self, X):
@@ -65,7 +66,6 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         self.rff = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit RFF features and then Logistic Regression
         self.clf.fit(self.rff.fit_transform(X), y)
         return self
     def predict(self, X):
@@ -77,7 +77,15 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 # ----------------------
-# Dataset (Breast Cancer for focused final test)
+# Pipeline wrapper ให้ VotingClassifier ใช้ได้
+# ----------------------
+class ClassifierPipeline(Pipeline, ClassifierMixin):
+    @property
+    def _estimator_type(self):
+        return "classifier"
+
+# ----------------------
+# Dataset
 # ----------------------
 dataset = load_breast_cancer()
 X, y = dataset.data, dataset.target
@@ -88,49 +96,46 @@ X_train, X_test, y_train, y_test = train_test_split(
 # ----------------------
 # Pipelines and Ensemble
 # ----------------------
-# C=0.1 applied for regularization to prevent overfitting in Poly2
-pipe_xgb = Pipeline([
+pipe_xgb = ClassifierPipeline([
     ('scaler', StandardScaler()),
     ('xgb', xgb.XGBClassifier(max_depth=3, n_estimators=200,
                               use_label_encoder=False, eval_metric='logloss', random_state=42))
 ])
-pipe_poly2 = Pipeline([
+
+pipe_poly2 = ClassifierPipeline([
     ('scaler', StandardScaler()),
-    ('poly2', Poly2Wrapper(degree=2, C=0.1)) # C=0.1 for stability
+    ('poly2', Poly2Wrapper(degree=2, C=0.1))  # C=0.1 แก้ overfitting
 ])
-pipe_rff = Pipeline([
+
+pipe_rff = ClassifierPipeline([
     ('scaler', StandardScaler()),
     ('rff', RFFWrapper(gamma='scale', n_components=100, C=1.0))
 ])
-# Ensemble: Combined power of XGBoost and AWAKEN Layers
+
 ensemble = VotingClassifier(
     estimators=[
         ('XGBoost', pipe_xgb),
         ('Poly2', pipe_poly2),
         ('RFF', pipe_rff)
     ],
-    voting='hard' # Hard voting to be safe
+    voting='hard'
 )
+
 models = {"XGBoost": pipe_xgb, "Poly2": pipe_poly2, "RFF": pipe_rff, "Ensemble": ensemble}
 
 # ----------------------
-# Benchmark (CI-Safe)
+# Benchmark
 # ----------------------
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 results = []
 
 for name, model in models.items():
     try:
-        # FIX: Skip cross_val_score for VotingClassifier to avoid the ValueError (Pipeline check issue)
-        if name != "Ensemble":
-            # Calculate CV for individual stable models
-            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
-            cv_mean_acc = cv_scores.mean()
-        else:
-            # Skip CV for Ensemble, report NaN
-            cv_mean_acc = np.nan 
-
-        # Fit and predict for all models (including Ensemble)
+        # cross_val_score ปกติใช้ได้ทุก model
+        cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
+        cv_mean_acc = cv_scores.mean()
+        
+        # Fit และ Predict
         model.fit(X_train, y_train)
         y_train_pred = model.predict(X_train)
         y_test_pred = model.predict(X_test)
@@ -151,7 +156,7 @@ print(df)
 df.to_csv("benchmark_results.csv", index=False)
 
 # ----------------------
-# Optional plot (if matplotlib present)
+# Optional plot
 # ----------------------
 if HAVE_MPL:
     plt.figure(figsize=(8,5))
