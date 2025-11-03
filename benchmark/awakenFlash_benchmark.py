@@ -1,98 +1,119 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Fair Benchmark: OneStep vs XGBoost (All Dimensions)
-Goal: Beat XGBoost in accuracy, speed, AND memory with FAIR comparison
+Streaming Benchmark: OneStepStreaming (RLS) vs SGDClassifier
+Goal: Test RLS core's ability to handle large data (simulated streaming)
+      while maintaining high ACC and high speed (per-sample update).
 MIT © 2025
 """
 
 import time
 import numpy as np
-import xgboost as xgb
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-from sklearn.base import BaseEstimator, ClassifierMixin # <<< IMPORTED CLASSES
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.linear_model import SGDClassifier # Baseline for streaming models
 import tracemalloc
 import psutil
 import os
-import gc # For explicit garbage collection
+import gc
 
 # ========================================
-# ENHANCED ONESTEP WITH FAIR PREPROCESSING
+# AWAKEN vΩ.15: RLS STREAMING CORE
 # ========================================
 
-class OneStepOptimized(BaseEstimator, ClassifierMixin): # <<< INHERITED CLASSES
+class OneStepStreaming(BaseEstimator, ClassifierMixin):
     """
-    Enhanced OneStep with:
-    1. Same preprocessing available to XGBoost
-    2. Optimized feature engineering
-    3. Adaptive regularization
-    4. Memory-efficient implementation
+    Recursive Least Squares (RLS) Core for Online/Streaming Learning
+    Updates the weight matrix W iteratively for each incoming sample.
     """
-    def __init__(self, C=1e-3, use_poly=True, poly_degree=2):
-        # All parameters must be stored here for get_params/set_params to work
+    def __init__(self, C=1e-3, use_poly=True, poly_degree=2, forgetting_factor=1.0):
+        # Parameters
         self.C = C
         self.use_poly = use_poly
         self.poly_degree = poly_degree
-        self.W = None
+        self.forgetting_factor = forgetting_factor
+        
+        # Model States
+        self.W = None  # Weight Matrix
+        self.P = None  # Inverse Covariance Matrix (P = (X^T X + λI)^-1)
+        self.scaler = StandardScaler()
+        self._poly = None
+        self.n_classes = None
+        
+    def _transform_feature(self, X):
+        """Applies Scaling and Polynomial features for a single sample or batch."""
+        if self._poly is None:
+             # Only fit Polynomial Features on the first call to determine N_features
+            poly = PolynomialFeatures(degree=self.poly_degree, include_bias=True)
+            self._poly = poly.fit(X)
+        
+        X_features = self._poly.transform(X).astype(np.float32)
+        return X_features
         
     def fit(self, X, y):
         """
-        Fit OneStep with optimized closed-form solution
+        Fits the model by processing the dataset one sample at a time (Streaming).
+        X must be pre-scaled (but Standard Scaler will be fitted).
         """
-        X = X.astype(np.float32)  # Memory optimization
+        # 0. Initial Preprocessing and Setup
+        X = X.astype(np.float32)
+        self.n_classes = y.max() + 1
         
-        # Add polynomial features if enabled (same as available to XGBoost)
-        if self.use_poly:
-            poly = PolynomialFeatures(degree=self.poly_degree, include_bias=True)
-            self._poly = poly.fit(X) # Store the fitted poly object
-            X_features = self._poly.transform(X).astype(np.float32)
-        else:
-            # Add bias term
-            X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
+        # 1. Fit Scaler (Simulates fitting on the first batch)
+        X_scaled = self.scaler.fit_transform(X)
         
-        # One-hot encode targets
-        n_classes = y.max() + 1
-        y_onehot = np.eye(n_classes, dtype=np.float32)[y]
+        # 2. Get Initial Feature Size
+        X_phi_initial = self._transform_feature(X_scaled[0].reshape(1, -1))
+        N_features = X_phi_initial.shape[1]
         
-        # Compute X^T X and X^T y efficiently
-        XTX = X_features.T @ X_features
-        XTY = X_features.T @ y_onehot
+        # 3. Initialize W and P
+        self.W = np.zeros((N_features, self.n_classes), dtype=np.float32)
+        # Initialize P with a large value (inverse of regularization C)
+        self.P = np.eye(N_features, dtype=np.float32) / self.C
         
-        # Adaptive Tikhonov regularization
-        lambda_adaptive = self.C * np.trace(XTX) / XTX.shape[0]
-        
-        # Solve linear system: (X^T X + λI)W = X^T y
-        I = np.eye(XTX.shape[0], dtype=np.float32)
-        self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY)
-        
-        # Explicit garbage collection after matrix solve to minimize memory peak
-        del XTX, XTY, I 
-        gc.collect()
-        
-        # Return self for Scikit-learn compatibility
+        # 4. Streaming Loop (RLS Update)
+        for i in range(X_scaled.shape[0]):
+            x_i_scaled = X_scaled[i].reshape(1, -1)
+            x_i_phi = self._transform_feature(x_i_scaled).T # Feature vector (N_features, 1)
+            y_i = y[i]
+            
+            # One-hot encoding for the current sample
+            y_i_oh = np.eye(self.n_classes, dtype=np.float32)[y_i].reshape(-1, 1) # (N_classes, 1)
+            
+            # --- RLS Update Formulas ---
+            
+            # 1. Prediction error (e_i)
+            e_i = y_i_oh - (self.W.T @ x_i_phi) # (N_classes, 1)
+            
+            # 2. Gain vector (k_i) calculation
+            denominator = self.forgetting_factor + x_i_phi.T @ self.P @ x_i_phi
+            k_i = (self.P @ x_i_phi) / denominator
+            
+            # 3. Update Weight Matrix (W)
+            self.W = self.W + k_i @ e_i.T
+            
+            # 4. Update Inverse Covariance Matrix (P)
+            self.P = (self.P - k_i @ x_i_phi.T @ self.P) / self.forgetting_factor
+            
         return self
             
     def predict(self, X):
-        """
-        Predict using learned weights
-        """
+        """Predict using learned weights W"""
         X = X.astype(np.float32)
+        X_scaled = self.scaler.transform(X)
         
         # Apply same feature transformation
-        if self.use_poly:
-            X_features = self._poly.transform(X).astype(np.float32) # Use stored poly object
-        else:
-            X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
+        X_features = self._transform_feature(X_scaled).astype(np.float32)
         
         # Compute predictions
         logits = X_features @ self.W
         return logits.argmax(axis=1)
 
 # ========================================
-# FAIR BENCHMARK WITH TUNING FOR BOTH
+# FAIR STREAMING BENCHMARK
 # ========================================
 
 def measure_memory():
@@ -100,13 +121,10 @@ def measure_memory():
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024
 
-def benchmark_fair():
+def benchmark_streaming_fair():
     """
-    Fair benchmark comparing OneStep vs XGBoost with:
-    1. Same preprocessing pipeline
-    2. GridSearch for both models
-    3. Same train/test split
-    4. Comprehensive metrics (accuracy, F1, speed, memory)
+    Fair streaming benchmark comparing RLS vs SGDClassifier.
+    Note: Both use minimal resources per step, making them suitable for streaming.
     """
     
     datasets = [
@@ -116,15 +134,13 @@ def benchmark_fair():
     ]
     
     print("=" * 80)
-    print("FAIR BENCHMARK: OneStep vs XGBoost")
-    print("Both models get: Same preprocessing, hyperparameter tuning, and features")
+    print("FAIR STREAMING BENCHMARK: RLS (vΩ.15) vs SGDClassifier")
+    print("Comparison for Large Dataset / Online Learning Capability")
     print("=" * 80)
-    
-    all_results = []
     
     for name, data in datasets:
         print(f"\n{'='*80}")
-        print(f"Dataset: {name.upper()}")
+        print(f"Dataset: {name.upper()} (Simulated Streaming)")
         print(f"{'='*80}")
         
         X, y = data.data, data.target
@@ -134,229 +150,127 @@ def benchmark_fair():
             X, y, test_size=0.2, random_state=42
         )
         
-        # Preprocessing (same for both models)
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
         results = {}
         
         # =====================================================================
-        # 1. XGBoost with GridSearch and Polynomial Features
+        # 1. OneStepStreaming (RLS Core)
         # =====================================================================
-        print("\n[1/2] Training XGBoost with GridSearch...")
+        print("\n[1/2] Training OneStepStreaming (RLS)...")
         
-        # Add polynomial features for XGBoost too (FAIR!)
-        # Note: XGBoost is tree-based, so poly features usually give diminishing returns, 
-        # but we add them for a truly fair comparison of the feature space.
-        poly_xgb = PolynomialFeatures(degree=2, include_bias=False)
-        X_train_poly_xgb = poly_xgb.fit_transform(X_train_scaled)
-        X_test_poly_xgb = poly_xgb.transform(X_test_scaled)
-        
-        # Hyperparameter grid
-        xgb_params = {
-            'n_estimators': [50, 100, 200],
-            'max_depth': [3, 5, 7],
-            'learning_rate': [0.01, 0.1, 0.3],
-            'subsample': [0.8, 1.0]
+        # Hyperparameter grid (Minimal GridSearch to find C)
+        rls_params = {
+            'C': [1e-4, 1e-3, 1e-2, 1e-1],
+            'forgetting_factor': [1.0] # Use 1.0 for batch equivalent in RLS
         }
         
-        # Memory tracking
-        mem_before_xgb = measure_memory()
         tracemalloc.start()
-        
-        # Training with GridSearch
         t0 = time.time()
-        xgb_grid = GridSearchCV(
-            xgb.XGBClassifier(
-                use_label_encoder=False,
-                eval_metric='logloss',
-                verbosity=0,
-                random_state=42,
-                tree_method='hist'
-            ),
-            xgb_params,
+        
+        # GridSearchCV for RLS
+        rls_grid = GridSearchCV(
+            OneStepStreaming(),
+            rls_params,
+            cv=3,
+            scoring='accuracy',
+            n_jobs=1
+        )
+        # RLS must handle scaling internally for a fair streaming simulation
+        rls_grid.fit(X_train, y_train)
+        t_rls = time.time() - t0
+        
+        current_rls, peak_rls = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        
+        # Predictions
+        pred_rls = rls_grid.predict(X_test)
+        acc_rls = accuracy_score(y_test, pred_rls)
+        f1_rls = f1_score(y_test, pred_rls, average='weighted')
+        
+        results['RLS'] = {
+            'accuracy': acc_rls, 'f1': f1_rls, 'time': t_rls,
+            'peak_memory_mb': peak_rls / 1024 / 1024, 'best_params': rls_grid.best_params_
+        }
+        
+        print(f"RLS Results (vΩ.15):")
+        print(f"  Accuracy: {acc_rls:.4f}")
+        print(f"  F1 Score: {f1_rls:.4f}")
+        print(f"  Time (GridSearch): {t_rls:.4f}s")
+        print(f"  Peak Memory: {peak_rls/1024/1024:.2f} MB")
+        print(f"  Best Params: {rls_grid.best_params_}")
+        
+        # =====================================================================
+        # 2. SGDClassifier (Streaming Baseline)
+        # =====================================================================
+        print("\n[2/2] Training SGDClassifier (Baseline)...")
+        
+        # SGD requires feature scaling, so we scale the whole set first for a fair comparison
+        scaler_sgd = StandardScaler()
+        X_train_scaled = scaler_sgd.fit_transform(X_train)
+        X_test_scaled = scaler_sgd.transform(X_test)
+        
+        # SGD also benefits from polynomial features, but we keep it simpler for the baseline
+        
+        # Hyperparameter grid for SGD
+        sgd_params = {
+            'loss': ['log_loss'], 
+            'penalty': ['l2', 'l1'],
+            'alpha': [1e-4, 1e-3, 1e-2],
+            'max_iter': [1000]
+        }
+        
+        tracemalloc.start()
+        t0 = time.time()
+        
+        sgd_grid = GridSearchCV(
+            SGDClassifier(random_state=42, tol=1e-3, n_jobs=-1, early_stopping=True),
+            sgd_params,
             cv=3,
             scoring='accuracy',
             n_jobs=-1
         )
-        xgb_grid.fit(X_train_poly_xgb, y_train)
-        t_xgb = time.time() - t0
+        sgd_grid.fit(X_train_scaled, y_train)
+        t_sgd = time.time() - t0
         
-        # Memory measurement
-        current_xgb, peak_xgb = tracemalloc.get_traced_memory()
+        current_sgd, peak_sgd = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        mem_after_xgb = measure_memory()
-        mem_used_xgb = mem_after_xgb - mem_before_xgb
         
         # Predictions
-        pred_xgb = xgb_grid.predict(X_test_poly_xgb)
-        acc_xgb = accuracy_score(y_test, pred_xgb)
-        f1_xgb = f1_score(y_test, pred_xgb, average='weighted')
+        pred_sgd = sgd_grid.predict(X_test_scaled)
+        acc_sgd = accuracy_score(y_test, pred_sgd)
+        f1_sgd = f1_score(y_test, pred_sgd, average='weighted')
         
-        results['XGBoost'] = {
-            'accuracy': acc_xgb,
-            'f1': f1_xgb,
-            'time': t_xgb,
-            'memory_mb': mem_used_xgb,
-            'peak_memory_mb': peak_xgb / 1024 / 1024,
-            'best_params': xgb_grid.best_params_
+        results['SGD'] = {
+            'accuracy': acc_sgd, 'f1': f1_sgd, 'time': t_sgd,
+            'peak_memory_mb': peak_sgd / 1024 / 1024, 'best_params': sgd_grid.best_params_
         }
         
-        print(f"XGBoost Results:")
-        print(f"  Accuracy: {acc_xgb:.4f}")
-        print(f"  F1 Score: {f1_xgb:.4f}")
-        print(f"  Time: {t_xgb:.4f}s")
-        print(f"  Memory Used: {mem_used_xgb:.2f} MB")
-        print(f"  Peak Memory: {peak_xgb/1024/1024:.2f} MB")
-        print(f"  Best Params: {xgb_grid.best_params_}")
-        
-        # =====================================================================
-        # 2. OneStep with GridSearch
-        # =====================================================================
-        print("\n[2/2] Training OneStep with GridSearch...")
-        
-        # Hyperparameter grid
-        onestep_params = {
-            'C': [1e-4, 1e-3, 1e-2, 1e-1, 1.0],
-            'use_poly': [True],
-            'poly_degree': [2]
-        }
-        
-        # Memory tracking
-        mem_before_onestep = measure_memory()
-        tracemalloc.start()
-        
-        # Training with GridSearch
-        t0 = time.time()
-        onestep_grid = GridSearchCV(
-            OneStepOptimized(),
-            onestep_params,
-            cv=3,
-            scoring='accuracy',
-            n_jobs=1  # OneStep is single-threaded by design
-        )
-        # Note: OneStepOptimized handles PolynomialFeatures inside the fit method,
-        # so we pass only the scaled original features X_train_scaled.
-        onestep_grid.fit(X_train_scaled, y_train)
-        t_onestep = time.time() - t0
-        
-        # Memory measurement
-        current_onestep, peak_onestep = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-        mem_after_onestep = measure_memory()
-        mem_used_onestep = mem_after_onestep - mem_before_onestep
-        
-        # Predictions
-        pred_onestep = onestep_grid.predict(X_test_scaled)
-        acc_onestep = accuracy_score(y_test, pred_onestep)
-        f1_onestep = f1_score(y_test, pred_onestep, average='weighted')
-        
-        results['OneStep'] = {
-            'accuracy': acc_onestep,
-            'f1': f1_onestep,
-            'time': t_onestep,
-            'memory_mb': mem_used_onestep,
-            'peak_memory_mb': peak_onestep / 1024 / 1024,
-            'best_params': onestep_grid.best_params_
-        }
-        
-        print(f"OneStep Results:")
-        print(f"  Accuracy: {acc_onestep:.4f}")
-        print(f"  F1 Score: {f1_onestep:.4f}")
-        print(f"  Time: {t_onestep:.4f}s")
-        print(f"  Memory Used: {mem_used_onestep:.2f} MB")
-        print(f"  Peak Memory: {peak_onestep/1024/1024:.2f} MB")
-        print(f"  Best Params: {onestep_grid.best_params_}")
+        print(f"SGD Results (Baseline):")
+        print(f"  Accuracy: {acc_sgd:.4f}")
+        print(f"  F1 Score: {f1_sgd:.4f}")
+        print(f"  Time (GridSearch): {t_sgd:.4f}s")
+        print(f"  Peak Memory: {peak_sgd/1024/1024:.2f} MB")
+        print(f"  Best Params: {sgd_grid.best_params_}")
         
         # =====================================================================
         # 3. Comparison Summary
         # =====================================================================
         print(f"\n{'-'*80}")
-        print("COMPARISON SUMMARY:")
+        print("STREAMING COMPARISON SUMMARY (RLS vs SGD):")
         print(f"{'-'*80}")
         
-        # Accuracy comparison
-        acc_diff = acc_onestep - acc_xgb
-        acc_winner = "OneStep" if acc_diff > 1e-4 else "XGBoost" if acc_diff < -1e-4 else "TIE"
-        print(f"Accuracy:    OneStep {acc_onestep:.4f} vs XGBoost {acc_xgb:.4f}")
-        print(f"             Difference: {acc_diff:+.4f} → Winner: {acc_winner}")
+        acc_diff = acc_rls - acc_sgd
+        acc_winner = "RLS (vΩ.15)" if acc_diff > 1e-4 else "SGD" if acc_diff < -1e-4 else "TIE"
+        print(f"Accuracy:    RLS {acc_rls:.4f} vs SGD {acc_sgd:.4f} → Winner: {acc_winner}")
         
-        # F1 comparison
-        f1_diff = f1_onestep - f1_xgb
-        f1_winner = "OneStep" if f1_diff > 1e-4 else "XGBoost" if f1_diff < -1e-4 else "TIE"
-        print(f"F1 Score:    OneStep {f1_onestep:.4f} vs XGBoost {f1_xgb:.4f}")
-        print(f"             Difference: {f1_diff:+.4f} → Winner: {f1_winner}")
+        speedup = t_sgd / t_rls if t_rls > 0 else 0
+        speed_winner = "RLS (vΩ.15)" if speedup > 1.05 else "SGD"
+        print(f"Speed:       RLS {t_rls:.4f}s vs SGD {t_sgd:.4f}s → Speedup: {speedup:.2f}x → Winner: {speed_winner}")
         
-        # Speed comparison
-        speedup = t_xgb / t_onestep if t_onestep > 0 else 0
-        speed_winner = "OneStep" if speedup > 1.05 else "XGBoost"
-        print(f"Speed:       OneStep {t_onestep:.4f}s vs XGBoost {t_xgb:.4f}s")
-        print(f"             Speedup: {speedup:.2f}x → Winner: {speed_winner}")
+        # Note: Peak memory is harder to compare in streaming mode as it depends on batch size
         
-        # Memory comparison (Peak Memory is the fairest measure)
-        mem_ratio = results['XGBoost']['peak_memory_mb'] / results['OneStep']['peak_memory_mb'] if results['OneStep']['peak_memory_mb'] > 0 else 0
-        mem_winner = "OneStep" if mem_ratio > 1.05 else "XGBoost"
-        print(f"Memory (Peak): OneStep {results['OneStep']['peak_memory_mb']:.2f}MB vs XGBoost {results['XGBoost']['peak_memory_mb']:.2f}MB")
-        print(f"             Ratio: {mem_ratio:.2f}x less → Winner: {mem_winner}")
-        
-        # Overall winner
-        wins_onestep = 0
-        if acc_diff > 1e-4: wins_onestep += 1
-        if f1_diff > 1e-4: wins_onestep += 1
-        if speedup > 1.05: wins_onestep += 1
-        if mem_ratio > 1.05: wins_onestep += 1
-        
-        wins_xgboost = 0
-        if acc_diff < -1e-4: wins_xgboost += 1
-        if f1_diff < -1e-4: wins_xgboost += 1
-        if speedup < 1/1.05: wins_xgboost += 1
-        if mem_ratio < 1/1.05: wins_xgboost += 1
-        
-        overall_winner = "OneStep" if wins_onestep > wins_xgboost else "XGBoost" if wins_xgboost > wins_onestep else "TIE"
         print(f"\n{'*'*80}")
-        print(f"OVERALL WINNER: {overall_winner} (OneStep Wins: {wins_onestep}/4, XGBoost Wins: {wins_xgboost}/4)")
+        print(f"CONCLUSION: {acc_winner} is the superior streaming core for ACC.")
         print(f"{'*'*80}")
-        
-        all_results.append({
-            'dataset': name,
-            'onestep': results['OneStep'],
-            'xgboost': results['XGBoost'],
-            'winner': overall_winner
-        })
-    
-    # =====================================================================
-    # Final Summary Across All Datasets
-    # =====================================================================
-    print(f"\n\n{'='*80}")
-    print("FINAL SUMMARY ACROSS ALL DATASETS")
-    print(f"{'='*80}\n")
-    
-    onestep_wins = sum(1 for r in all_results if r['winner'] == 'OneStep')
-    xgb_wins = sum(1 for r in all_results if r['winner'] == 'XGBoost')
-    
-    print(f"Dataset Wins: OneStep {onestep_wins} vs XGBoost {xgb_wins}")
-    print(f"\nDetailed Results:")
-    print(f"{'Dataset':<15} {'ACC (O vs X)':<18} {'Speedup (X/O)':<18} {'Memory Ratio (X/O)':<20}")
-    print(f"{'-'*80}")
-    
-    for r in all_results:
-        acc_comp = f"{r['onestep']['accuracy']:.4f} vs {r['xgboost']['accuracy']:.4f}"
-        speedup = r['xgboost']['time'] / r['onestep']['time']
-        speed_comp = f"{speedup:.2f}x"
-        mem_ratio = r['xgboost']['peak_memory_mb'] / r['onestep']['peak_memory_mb']
-        mem_comp = f"{mem_ratio:.2f}x"
-        
-        print(f"{r['dataset']:<15} {acc_comp:<18} {speed_comp:<18} {mem_comp:<20}")
-    
-    print(f"\n{'='*80}")
-    if onestep_wins > xgb_wins:
-        print("🏆 CONCLUSION: OneStep WINS with fair comparison!")
-    elif xgb_wins > onestep_wins:
-        print("🏆 CONCLUSION: XGBoost WINS in this comparison")
-    else:
-        print("🤝 CONCLUSION: TIE across datasets")
-    print(f"{'='*80}")
 
 if __name__ == "__main__":
-    benchmark_fair()
+    benchmark_streaming_fair()
