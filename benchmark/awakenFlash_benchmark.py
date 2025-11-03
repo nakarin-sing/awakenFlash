@@ -1,35 +1,59 @@
-# awakenFlash_benchmark_real.py — Real-World Ensemble Benchmark
 import os
 import numpy as np
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
-from xgboost import XGBClassifier
 from sklearn.kernel_approximation import RBFSampler
+from sklearn.metrics import accuracy_score, f1_score
+import xgboost as xgb
 
-# =======================
-# Random Fourier Features wrapper
-# =======================
-class RFF:
-    def __init__(self, n_components=100, gamma=1.0):
-        self.n_components = n_components
-        self.gamma = gamma
-        self.rbf_sampler = RBFSampler(n_components=self.n_components, gamma=self.gamma, random_state=42)
-        self.model = LogisticRegression(max_iter=500)
+# =========================
+# Model Wrappers
+# =========================
 
+class XGBoostWrapper:
+    def __init__(self):
+        self.model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
     def fit(self, X, y):
-        X_new = self.rbf_sampler.fit_transform(X)
-        self.model.fit(X_new, y)
-
+        self.model.fit(X, y)
     def predict(self, X):
-        X_new = self.rbf_sampler.transform(X)
-        return self.model.predict(X_new)
+        return self.model.predict(X)
 
-# =======================
-# Benchmark function
-# =======================
+class OneStepWrapper:
+    def __init__(self):
+        self.model = LogisticRegression(max_iter=1000, random_state=42)
+    def fit(self, X, y):
+        self.model.fit(X, y)
+    def predict(self, X):
+        return self.model.predict(X)
+
+class Poly2Wrapper:
+    def __init__(self):
+        self.poly = PolynomialFeatures(degree=2, include_bias=False)
+        self.model = LogisticRegression(max_iter=1000, random_state=42)
+    def fit(self, X, y):
+        X_poly = self.poly.fit_transform(X)
+        self.model.fit(X_poly, y)
+    def predict(self, X):
+        X_poly = self.poly.transform(X)
+        return self.model.predict(X_poly)
+
+class RFFWrapper:
+    def __init__(self, gamma=1.0, n_components=100):
+        self.rff = RBFSampler(gamma=gamma, n_components=n_components, random_state=42)
+        self.model = LogisticRegression(max_iter=1000, random_state=42)
+    def fit(self, X, y):
+        X_rff = self.rff.fit_transform(X)
+        self.model.fit(X_rff, y)
+    def predict(self, X):
+        X_rff = self.rff.transform(X)
+        return self.model.predict(X_rff)
+
+# =========================
+# Benchmark Runner
+# =========================
+
 def run_benchmark():
     datasets = {
         "breast_cancer": load_breast_cancer(),
@@ -38,66 +62,47 @@ def run_benchmark():
     }
 
     os.makedirs("benchmark_results", exist_ok=True)
-    results = []
+    results_file = "benchmark_results/results.txt"
 
-    for name, dataset in datasets.items():
-        X, y = dataset.data, dataset.target
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_test = scaler.transform(X_test)
+    with open(results_file, "w") as f:
+        for name, data in datasets.items():
+            X, y = data.data, data.target
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+            scaler = StandardScaler().fit(X_train)
+            X_train, X_test = scaler.transform(X_train), scaler.transform(X_test)
 
-        # Models
-        models = {}
+            # Initialize models
+            xgb_model = XGBoostWrapper(); xgb_model.fit(X_train, y_train); xgb_pred = xgb_model.predict(X_test)
+            one = OneStepWrapper(); one.fit(X_train, y_train); one_pred = one.predict(X_test)
+            poly = Poly2Wrapper(); poly.fit(X_train, y_train); poly_pred = poly.predict(X_test)
+            rff = RFFWrapper(); rff.fit(X_train, y_train); rff_pred = rff.predict(X_test)
 
-        # XGBoost
-        models['XGBoost'] = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
-        # Logistic Regression (OneStep)
-        models['OneStep'] = LogisticRegression(max_iter=500, random_state=42)
-        # Polynomial Features + Logistic Regression (Poly2)
-        poly = PolynomialFeatures(degree=2, include_bias=False)
-        X_train_poly = poly.fit_transform(X_train)
-        X_test_poly = poly.transform(X_test)
-        poly_model = LogisticRegression(max_iter=500, random_state=42)
-        models['Poly2'] = (poly_model, X_train_poly, X_test_poly)
-        # RFF
-        models['RFF'] = RFF(n_components=100, gamma=1.0)
+            # Ensemble: majority voting
+            ensemble_preds = np.array([xgb_pred, one_pred, poly_pred, rff_pred])
+            ensemble_pred = np.apply_along_axis(lambda x: np.bincount(x).argmax(), 0, ensemble_preds)
 
-        preds = {}
-        log_lines = [f"===== Dataset: {name} ====="]
+            # Evaluate all models
+            models = {
+                "XGBoost": xgb_pred,
+                "OneStep": one_pred,
+                "Poly2": poly_pred,
+                "RFF": rff_pred,
+                "Ensemble": ensemble_pred
+            }
 
-        # Train and predict
-        for m_name, model in models.items():
-            if m_name == 'Poly2':
-                clf, X_tr, X_te = model
-                clf.fit(X_tr, y_train)
-                y_pred = clf.predict(X_te)
-            else:
-                model.fit(X_train, y_train)
-                y_pred = model.predict(X_test)
-            preds[m_name] = y_pred
-            acc = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, average='weighted')
-            log_lines.append(f"{m_name:<10} ACC: {acc:.4f}  F1: {f1:.4f}")
-            results.append(f"{name},{m_name},{acc:.4f},{f1:.4f}")
+            log = [f"===== Dataset: {name} ====="]
+            for mname, pred in models.items():
+                acc = accuracy_score(y_test, pred)
+                f1 = f1_score(y_test, pred, average='weighted')
+                log.append(f"{mname:10} ACC: {acc:.4f} F1: {f1:.4f}")
+            log_text = "\n".join(log)
+            print(log_text)
+            f.write(log_text + "\n\n")
 
-        # Ensemble: majority vote of OneStep + Poly2 + RFF
-        ensemble_preds = np.array([preds['OneStep'], preds['Poly2'], preds['RFF']])
-        ensemble_vote = np.apply_along_axis(lambda x: np.bincount(x).argmax(), axis=0, arr=ensemble_preds)
-        acc_ens = accuracy_score(y_test, ensemble_vote)
-        f1_ens = f1_score(y_test, ensemble_vote, average='weighted')
-        log_lines.append(f"{'Ensemble':<10} ACC: {acc_ens:.4f}  F1: {f1_ens:.4f}")
-        results.append(f"{name},Ensemble,{acc_ens:.4f},{f1_ens:.4f}")
+    print("="*70)
+    print("AWAKEN vΩ.Real+++ — Real XGBoost + Logistic + Poly + RFF Ensemble | CI-ready")
+    print(f"Results saved to {results_file}")
+    print("="*70)
 
-        # Print log to CI
-        print("\n".join(log_lines))
-        print("="*70)
-
-    # Save results to file
-    with open("benchmark_results/results.txt", "w") as f:
-        f.write("\n".join(results))
-    print("Results saved to benchmark_results/results.txt")
-
-# =======================
 if __name__ == "__main__":
     run_benchmark()
