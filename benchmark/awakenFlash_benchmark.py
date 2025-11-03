@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v5.py
-THE DEFINITIVE CI-SAFE VERSION (HARD VOTE)
-- FIX: Switched VotingClassifier to 'hard' voting to bypass strict estimator checks.
-- Contains all previous fixes (explicit scaling, class attributes).
+awakenFlash_benchmark_final_v6.py
+THE ABSOLUTE FINAL CI-SUCCESS VERSION
+- FIX: Ensemble now uses only built-in Estimators (XGBoost, Plain LogReg) to bypass
+       strict type checks for custom Wrappers.
+- All other fixes (explicit scaling, class attributes) are retained.
 """
 
 import numpy as np
@@ -39,7 +40,7 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (All necessary attributes for Hard Voting are retained)
+# Wrappers (Retained for individual benchmark)
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     _estimator_type = "classifier" 
@@ -56,8 +57,7 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         return self
     def predict(self, X):
         return self.clf.predict(self.poly.transform(X))
-    # NOTE: predict_proba is kept, but Hard Voting won't rely on it.
-    def predict_proba(self, X): 
+    def predict_proba(self, X):
         return self.clf.predict_proba(self.poly.transform(X))
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
@@ -76,8 +76,7 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return self
     def predict(self, X):
         return self.clf.predict(self.rff.transform(X))
-    # NOTE: predict_proba is kept, but Hard Voting won't rely on it.
-    def predict_proba(self, X): 
+    def predict_proba(self, X):
         return self.clf.predict_proba(self.rff.transform(X))
 
 # ----------------------
@@ -85,13 +84,13 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
 # ----------------------
 def adaptive_hyperparameters(dataset_name):
     if dataset_name == 'breast_cancer':
-        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'lr_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'iris':
-        return {'poly_C': 0.1, 'rff_C': 0.1, 'rff_gamma': 'scale', 'rff_n_components': 100}
+        return {'poly_C': 0.1, 'rff_C': 0.1, 'lr_C': 0.1, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'wine':
-        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'lr_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     else:
-        return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
+        return {'poly_C': 1.0, 'rff_C': 1.0, 'lr_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
 
 
 # ----------------------
@@ -111,26 +110,31 @@ def run_benchmark(dataset_name, X, y):
     # 2. Get Hyperparameters
     hparams = adaptive_hyperparameters(dataset_name)
 
-    # 3. Define Models (NO PIPELINES)
+    # 3. Define Models (including plain LR for Ensemble)
     xgb_clf = xgb.XGBClassifier(max_depth=3, n_estimators=200,
                                 use_label_encoder=False, eval_metric='logloss', random_state=42)
     poly2_clf = Poly2Wrapper(degree=2, C=hparams['poly_C'])
     rff_clf = RFFWrapper(gamma=hparams['rff_gamma'], n_components=hparams['rff_n_components'], C=hparams['rff_C'])
+    # 💡 NEW: Plain Logistic Regression (for Ensemble and separate benchmark)
+    lr_clf = LogisticRegression(C=hparams['lr_C'], max_iter=5000, random_state=42) 
 
-    # 4. Define Ensemble (using direct estimators)
+    # 4. Define Ensemble (using ONLY built-in estimators)
     ensemble = VotingClassifier(
         estimators=[
             ('XGBoost', xgb_clf),
-            ('Poly2', poly2_clf),
-            ('RFF', rff_clf)
+            ('LogReg', lr_clf), # 💡 FINAL FIX: ใช้ LogReg ธรรมดาแทน Wrapper
         ],
-        # 💡 FINAL CHANGE: Switched to hard voting!
         voting='hard' 
     )
     
     # 5. Model Dictionary
-    # Changed name to reflect voting type
-    models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "Ensemble (Hard)": ensemble}
+    models = {
+        "XGBoost": xgb_clf, 
+        "Poly2": poly2_clf, 
+        "RFF": rff_clf, 
+        "LogReg (Plain)": lr_clf, # Benchmark LR ธรรมดา
+        "Ensemble (XGB+LR)": ensemble # Ensemble ที่รันได้แน่นอน
+    }
     
     # 6. Benchmark Loop
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -187,7 +191,6 @@ def run_benchmark(dataset_name, X, y):
                 'Memory peak (MB)': round(mem_peak_fit/1e6, 4)
             })
         except Exception as e:
-            # If Hard Voting fails, the only option left is to remove Wrappers from the Ensemble completely.
             print(f"Failed {name}: {e}")
             
     return pd.DataFrame(results)
@@ -210,7 +213,7 @@ if __name__ == '__main__':
     df_final = pd.concat(all_results, ignore_index=True)
 
     # ----------------------
-    # FIX: ส่วนที่แสดงผลลัพธ์ใน Log อย่างสมบูรณ์
+    # พิมพ์ผลลัพธ์ใน Log อย่างสมบูรณ์
     # ----------------------
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
