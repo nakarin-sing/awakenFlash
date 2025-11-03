@@ -1,118 +1,137 @@
+# awakenFlash_benchmark_refactored.py
+
 import numpy as np
 import pandas as pd
 from sklearn.datasets import load_breast_cancer
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-from sklearn.linear_model import LogisticRegression
-from sklearn.kernel_approximation import RBFSampler
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import accuracy_score, f1_score
 import xgboost as xgb
-from sklearn.base import BaseEstimator, ClassifierMixin
 
-# -----------------------------
-# Wrappers
-# -----------------------------
+# ==========================
+# Custom Wrappers
+# ==========================
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     _estimator_type = "classifier"
-    def __init__(self, degree=2, C=1.0):
+
+    def __init__(self, degree=2, C=0.1, interaction_only=True):
         self.degree = degree
         self.C = C
-        self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
-        self.model = LogisticRegression(max_iter=5000, C=self.C, random_state=42)
+        self.interaction_only = interaction_only
+
     def fit(self, X, y):
+        from sklearn.preprocessing import PolynomialFeatures
+        from sklearn.linear_model import LogisticRegression
+
+        self.poly = PolynomialFeatures(degree=self.degree, interaction_only=self.interaction_only, include_bias=False)
         X_poly = self.poly.fit_transform(X)
+        self.model = LogisticRegression(C=self.C, max_iter=1000, solver='liblinear')
         self.model.fit(X_poly, y)
         return self
+
     def predict(self, X):
         X_poly = self.poly.transform(X)
         return self.model.predict(X_poly)
-    def score(self, X, y):
-        return accuracy_score(y, self.predict(X))
+
+    def predict_proba(self, X):
+        X_poly = self.poly.transform(X)
+        return self.model.predict_proba(X_poly)
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
     _estimator_type = "classifier"
-    def __init__(self, gamma=1.0, n_components=500, C=1.0):
+
+    def __init__(self, gamma='scale', n_components=100, C=1.0):
         self.gamma = gamma
         self.n_components = n_components
         self.C = C
-        self.rbf = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
-        self.model = LogisticRegression(max_iter=5000, C=self.C, random_state=42)
-    def fit(self, X, y):
-        X_rbf = self.rbf.fit_transform(X)
-        self.model.fit(X_rbf, y)
-        return self
-    def predict(self, X):
-        X_rbf = self.rbf.transform(X)
-        return self.model.predict(X_rbf)
-    def score(self, X, y):
-        return accuracy_score(y, self.predict(X))
 
-# -----------------------------
-# Load dataset
-# -----------------------------
+    def fit(self, X, y):
+        from sklearn.kernel_approximation import RBFSampler
+        from sklearn.linear_model import LogisticRegression
+
+        self.rbf = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
+        X_rff = self.rbf.fit_transform(X)
+        self.model = LogisticRegression(C=self.C, max_iter=1000, solver='liblinear')
+        self.model.fit(X_rff, y)
+        return self
+
+    def predict(self, X):
+        X_rff = self.rbf.transform(X)
+        return self.model.predict(X_rff)
+
+    def predict_proba(self, X):
+        X_rff = self.rbf.transform(X)
+        return self.model.predict_proba(X_rff)
+
+# ==========================
+# Load Data
+# ==========================
 data = load_breast_cancer()
 X, y = data.data, data.target
 
+# Standard train-test split
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.63, random_state=42, stratify=y
+    X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
-# -----------------------------
-# Models
-# -----------------------------
+# ==========================
+# Define Models
+# ==========================
 models = {
     "XGBoost": xgb.XGBClassifier(
         max_depth=3, n_estimators=200, use_label_encoder=False,
         eval_metric='logloss', random_state=42
     ),
-    "Poly2": Poly2Wrapper(degree=2, C=1.0),
-    "RFF": RFFWrapper(gamma=0.1, n_components=500, C=1.0)
+    "Poly2": Poly2Wrapper(degree=2, C=0.1, interaction_only=True),
+    "RFF": RFFWrapper(gamma='scale', n_components=100, C=1.0)
 }
 
-# -----------------------------
-# Benchmark
-# -----------------------------
+# ==========================
+# Benchmark & Cross-Validation
+# ==========================
 results = []
 
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
 for name, model in models.items():
-    model.fit(X_train_scaled, y_train)
-    y_pred = model.predict(X_test_scaled)
-    train_acc = model.score(X_train_scaled, y_train)
-    test_acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    cv_mean = cross_val_score(model, X_train_scaled, y_train, cv=5).mean()
+    # pipeline ensures scaling inside CV
+    pipeline = make_pipeline(StandardScaler(), model)
+    cv_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring='accuracy')
+    pipeline.fit(X_train, y_train)
+    y_pred = pipeline.predict(X_test)
+    
     results.append({
         "Model": name,
-        "Train ACC": f"{train_acc:.4f}",
-        "Test ACC": f"{test_acc:.4f}",
-        "F1": f"{f1:.4f}",
-        "CV mean": f"{cv_mean:.4f}"
+        "Train ACC": accuracy_score(y_train, pipeline.predict(X_train)),
+        "Test ACC": accuracy_score(y_test, y_pred),
+        "F1": f1_score(y_test, y_pred, average='weighted'),
+        "CV mean": cv_scores.mean()
     })
 
-# -----------------------------
-# Voting Ensemble
-# -----------------------------
+# ==========================
+# Ensemble
+# ==========================
 ensemble = VotingClassifier(
     estimators=[(name, model) for name, model in models.items()],
     voting='hard'
 )
-ensemble.fit(X_train_scaled, y_train)
-y_pred = ensemble.predict(X_test_scaled)
+ensemble_pipeline = make_pipeline(StandardScaler(), ensemble)
+ensemble_pipeline.fit(X_train, y_train)
+y_pred_ens = ensemble_pipeline.predict(X_test)
+
 results.append({
     "Model": "Ensemble",
-    "Train ACC": f"{ensemble.score(X_train_scaled, y_train):.4f}",
-    "Test ACC": f"{accuracy_score(y_test, y_pred):.4f}",
-    "F1": f"{f1_score(y_test, y_pred):.4f}",
-    "CV mean": f"{cross_val_score(ensemble, X_train_scaled, y_train, cv=5).mean():.4f}"
+    "Train ACC": accuracy_score(y_train, ensemble_pipeline.predict(X_train)),
+    "Test ACC": accuracy_score(y_test, y_pred_ens),
+    "F1": f1_score(y_test, y_pred_ens, average='weighted'),
+    "CV mean": np.nan  # Ensemble CV skipped for simplicity
 })
 
-# -----------------------------
-# Display results
-# -----------------------------
-df = pd.DataFrame(results)
-print(df.to_string(index=False))
+# ==========================
+# Show Results
+# ==========================
+df_results = pd.DataFrame(results)
+print(df_results)
