@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v8.py
+awakenFlash_benchmark_final_v8_fix.py
 THE NON-LOGIC CONTEXTUAL VERSION (3-NON PRINCIPLE)
-- NEW: Implemented a 'BenchmarkContext' class to wrap time and memory tracking.
-- This adheres to the 3-Non principle (Non-Non-Non-Logic) by cleanly separating 
-  the measurement process from the core logic, reducing "contextual attachment."
+- FIX: Corrected 'StratifiedKfold' to 'StratifiedKFold' to resolve NameError.
+- Implemented a 'BenchmarkContext' class for clean time and memory tracking.
 """
 
 import numpy as np
@@ -15,9 +14,10 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ----------------------
-# sklearn + xgboost imports (remains the same)
+# sklearn + xgboost imports
 # ----------------------
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
+# 💡 แก้ไขการนำเข้า: นำเข้า StratifiedKFold ที่ถูกต้อง
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.linear_model import LogisticRegression
@@ -98,7 +98,7 @@ def estimate_flops(model, X_train, y_train, X_test, name):
     return flops
 
 # ----------------------
-# 💡 NEW: Benchmark Context Manager
+# Benchmark Context Manager (Remain the same)
 # ----------------------
 class BenchmarkContext:
     """A context manager to track time and memory peak accurately."""
@@ -119,7 +119,6 @@ class BenchmarkContext:
         tracemalloc.stop()
         self.peak_memory = peak
         self.duration = self.end_time - self.start_time
-        # No need to print error here; the main loop handles exceptions.
 
 # ----------------------
 # The Benchmark Function
@@ -146,7 +145,8 @@ def run_benchmark(dataset_name, X, y):
     models = {"XGBoost": xgb_clf, "Poly2": poly2_clf, "RFF": rff_clf, "LogReg (Plain)": lr_clf, "Ensemble (XGB+LR)": ensemble}
     
     # 6. Benchmark Loop
-    cv = StratifiedKfold(n_splits=5, shuffle=True, random_state=42)
+    # 💡 FIX: แก้ไข StratifiedKfold เป็น StratifiedKFold
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     results = []
     N_train = X_train_scaled.shape[0]
     N_test = X_test_scaled.shape[0]
@@ -209,9 +209,9 @@ def run_benchmark(dataset_name, X, y):
 # Main Execution (Remains the same)
 # ----------------------
 if __name__ == '__main__':
+    # ... (ส่วน run_benchmark และรวมผลลัพธ์) ...
     all_results = []
     
-    # Run all datasets
     data_bc = load_breast_cancer()
     all_results.append(run_benchmark('breast_cancer', data_bc.data, data_bc.target))
     data_iris = load_iris()
@@ -219,10 +219,8 @@ if __name__ == '__main__':
     data_wine = load_wine()
     all_results.append(run_benchmark('wine', data_wine.data, data_wine.target))
 
-    # Combine Results
     df_final = pd.concat(all_results, ignore_index=True)
 
-    # พิมพ์ผลลัพธ์ใน Log อย่างสมบูรณ์
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', 1000)
