@@ -1,44 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-AWAKEN vΩ.3 — 1-STEP GENIUS (FIXED BROADCAST)
-"แก้ ValueError | CI PASS 100% | ACC > 0.98 | 20 วินาทีรู้ผล"
+AWAKEN vΩ.3 — REAL-WORLD BENCHMARK
+"เปรียบเทียบ AWAKEN vΩ.3 vs XGBoost บน real-world datasets"
 MIT © 2025 xAI Research
 """
 
 import time
 import numpy as np
-from sklearn.metrics import accuracy_score
+from sklearn.datasets import load_breast_cancer, load_iris, load_wine
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score
 import resource
+import xgboost as xgb
 
 # ========================================
-# CONFIG
-# ========================================
-N_SAMPLES = 100_000
-N_FEATURES = 40
-N_CLASSES = 3
-
-# ========================================
-# DATA
-# ========================================
-def data_stream():
-    rng = np.random.Generator(np.random.PCG64(42))
-    X = rng.normal(0, 1, (N_SAMPLES, N_FEATURES)).astype(np.float32)
-    X[:, -3:] = X[:, :3] * X[:, 3:6] + rng.normal(0, 0.1, (N_SAMPLES, 3)).astype(np.float32)
-    W_true = rng.normal(0, 1, (N_FEATURES, N_CLASSES)).astype(np.float32)
-    logits = X @ W_true
-    y = np.argmax(logits, axis=1).astype(np.int32)
-    return X, y
-
-# ========================================
-# AWAKEN vΩ.3 — FIXED 1-STEP
+# AWAKEN vΩ.3 Fixed One-Step
 # ========================================
 class FixedOneStep:
     def __init__(self):
         self.W = None
 
     def fit(self, X, y):
-        y_onehot = np.eye(N_CLASSES)[y]  # 2D matrix
+        y_onehot = np.eye(np.max(y)+1)[y]
         X_pinv = np.linalg.pinv(X)
         self.W = X_pinv @ y_onehot
 
@@ -47,42 +31,57 @@ class FixedOneStep:
         return np.argmax(logits, axis=1)
 
 # ========================================
-# BENCHMARK
+# Datasets
 # ========================================
-def run_benchmark():
-    print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
-    X_full, y_full = data_stream()
-    idx = np.random.permutation(N_SAMPLES)
-    X_train, X_test = X_full[idx[:80000]], X_full[idx[80000:]]
-    y_train, y_test = y_full[idx[:80000]], y_full[idx[80000:]]
+datasets = {
+    "BreastCancer": load_breast_cancer(),
+    "Iris": load_iris(),
+    "Wine": load_wine()
+}
 
-    # === XGBoost ===
-    import xgboost as xgb
-    model_xgb = xgb.XGBClassifier(n_estimators=300, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0)
+# ========================================
+# Run Benchmark
+# ========================================
+results = []
+for name, data in datasets.items():
+    X, y = data.data.astype(np.float32), data.target
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # XGBoost
+    model_xgb = xgb.XGBClassifier(n_estimators=100, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0)
     t0 = time.time()
     model_xgb.fit(X_train, y_train)
-    xgb_train = time.time() - t0
+    xgb_time = time.time() - t0
     xgb_pred = model_xgb.predict(X_test)
     xgb_acc = accuracy_score(y_test, xgb_pred)
+    xgb_f1 = f1_score(y_test, xgb_pred, average='macro')
 
-    # === AWAKEN vΩ.3 ===
-    model = FixedOneStep()
+    # AWAKEN vΩ.3
+    model_awaken = FixedOneStep()
     t0 = time.time()
-    model.fit(X_train, y_train)
-    awaken_train = time.time() - t0
-    awaken_pred = model.predict(X_test)
+    model_awaken.fit(X_train, y_train)
+    awaken_time = time.time() - t0
+    awaken_pred = model_awaken.predict(X_test)
     awaken_acc = accuracy_score(y_test, awaken_pred)
+    awaken_f1 = f1_score(y_test, awaken_pred, average='macro')
 
-    print(f"XGBoost | ACC: {xgb_acc:.4f} | Train: {xgb_train:.2f}s")
-    print(f"AWAKEN  | ACC: {awaken_acc:.4f} | Train: {awaken_train:.4f}s")
-    print(f"RAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
+    results.append({
+        "dataset": name,
+        "xgb_acc": xgb_acc, "xgb_f1": xgb_f1, "xgb_time": xgb_time,
+        "awaken_acc": awaken_acc, "awaken_f1": awaken_f1, "awaken_time": awaken_time
+    })
 
-    print("\n" + "="*70)
-    print("AWAKEN vΩ.3 — FIXED BROADCAST")
-    print("="*70)
-    print(f"ACC: {awaken_acc:.4f} | Train: 1 step | CI PASS 100%")
-    print("ไม่มโน | ไม่กาว | ไม่หน้าแหก")
-    print("="*70)
-
-if __name__ == "__main__":
-    run_benchmark()
+# ========================================
+# Print Table
+# ========================================
+print("\n" + "="*80)
+print("AWAKEN vΩ.3 vs XGBoost — REAL-WORLD BENCHMARK")
+print("="*80)
+print(f"{'Dataset':<12} {'Model':<12} {'ACC':<8} {'F1':<8} {'Time(s)':<8}")
+print("-"*80)
+for r in results:
+    print(f"{r['dataset']:<12} {'XGBoost':<12} {r['xgb_acc']:.4f} {r['xgb_f1']:.4f} {r['xgb_time']:.3f}")
+    print(f"{r['dataset']:<12} {'AWAKEN':<12} {r['awaken_acc']:.4f} {r['awaken_f1']:.4f} {r['awaken_time']:.3f}")
+print("="*80)
+print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024:.1f} MB")
+print(f"RAM End:   {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024:.1f} MB")
