@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash vΩ.11 — MICRO ENSEMBLE CORE (Robustness Test)
-"Goal: Achieve superior robustness and stability against noise."
+awakenFlash vΩ.11.1 — MICRO ENSEMBLE CORE (Mode Fix)
+"Fixing the dimension issue in scipy.stats.mode output."
 MIT © 2025 xAI Research
 """
 
@@ -22,7 +22,6 @@ from scipy.stats import mode # Required for Ensemble Voting
 class OneStep:
     """
     Adaptive Core 1-Step Model with Minimal Quadratic Features and Tikhonov Damping.
-    (Used as the base estimator for the Micro Ensemble)
     """
     def _add_minimal_features(self, X):
         X = X.astype(np.float32)
@@ -59,13 +58,12 @@ class OneStep:
         return (X_final @ self.W).argmax(axis=1)
 
 # ========================================
-# ONESTEP MICRO ENSEMBLE (vΩ.11 New)
+# ONESTEP MICRO ENSEMBLE (vΩ.11.1 Fix)
 # ========================================
 
 class OneStepMicroEnsemble:
     """
     Micro Ensemble of N OneStep+ Models trained on bootstrapped samples (Bagging).
-    Goal: Increase Robustness and stability against noise/outliers.
     """
     def __init__(self, n_estimators=5, random_state=42):
         self.n_estimators = n_estimators
@@ -78,14 +76,13 @@ class OneStepMicroEnsemble:
         n_samples = X.shape[0]
 
         for i in range(self.n_estimators):
-            # 1. Bootstrapping: สุ่มตัวอย่างแบบใส่คืน (Bagging)
-            # สร้างตัวอย่างขนาดเดียวกับชุดฝึก แต่มีการทำซ้ำ
+            # 1. Bootstrapping
             indices = rng.choice(n_samples, size=n_samples, replace=True)
             X_bag = X[indices]
             y_bag = y[indices]
 
             # 2. Train OneStep+ Core
-            m = OneStep()  # ใช้ OneStep ที่มี Adaptive Tikhonov 
+            m = OneStep()
             m.fit(X_bag, y_bag)
             self.estimators.append(m)
 
@@ -93,15 +90,13 @@ class OneStepMicroEnsemble:
         # 3. Prediction and Hard Voting
         predictions = []
         for m in self.estimators:
-            # เก็บผลทำนายของทุกโมเดล
             predictions.append(m.predict(X))
 
-        # Hard Voting: หาโหมด (Most Frequent) ของผลทำนายแต่ละจุด
         predictions = np.array(predictions)
         
-        # ใช้ scipy.stats.mode เพื่อหาค่าที่ถูกโหวตมากที่สุด
-        # [0] คือค่า Mode, [0] เพื่อเข้าถึง array 1D
-        final_preds = mode(predictions, axis=0)[0][0] 
+        # 💡 FIX: ใช้ .ravel() เพื่อรับประกันว่าผลลัพธ์เป็นอาร์เรย์ 1 มิติเสมอ
+        # [0] เพื่อเข้าถึง array ของค่า Mode
+        final_preds = mode(predictions, axis=0)[0].ravel() 
         return final_preds
 
 # ========================================
@@ -149,13 +144,12 @@ def benchmark_optimized():
         results.append(("OneStep", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_onestep))
         onestep_total_time += t_onestep
         
-        # 💡 NEW: OneStep Micro Ensemble
+        # NEW: OneStep Micro Ensemble
         t0 = time.time()
         m_ensemble = OneStepMicroEnsemble(n_estimators=5); m_ensemble.fit(X_train, y_train)
         t_ensemble = time.time() - t0
         pred_ensemble = m_ensemble.predict(X_test)
         
-        # เวลาที่ใช้ฝึก Micro Ensemble จะรวมเวลาฝึก 5 โมเดล
         results.append(("MicroEnsm", accuracy_score(y_test, pred_ensemble), f1_score(y_test, pred_ensemble, average='weighted'), t_ensemble))
         onestep_ensemble_time += t_ensemble
 
@@ -167,16 +161,15 @@ def benchmark_optimized():
 
     print(f"\nRAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
-    # คำนวณความเร็วเทียบกับ XGBoost โดยใช้เวลาของ Micro Ensemble
     if onestep_ensemble_time > 0:
         speedup = xgb_total_time / onestep_ensemble_time
     else:
         speedup = 0
         
     print("\n" + "="*60)
-    print("AWAKEN vΩ.11 — MICRO ENSEMBLE CORE (Robustness Test)")
+    print("AWAKEN vΩ.11.1 — MICRO ENSEMBLE CORE (Mode Fix Test)")
     print(f"Total Speedup (XGB/MicroEnsm): {speedup:.1f}x")
-    print("Goal: MicroEnsm ACC > OneStep ACC, while maintaining high speed.")
+    print("Goal: Fix the voting error and verify MicroEnsm performance.")
     print("============================================================")
 
 if __name__ == "__main__":
