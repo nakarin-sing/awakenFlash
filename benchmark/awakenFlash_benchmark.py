@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_final_v3.py
-FINAL CI-SAFE VERSION (FIXED WRAPPER TYPE CHECK)
-- FIX: _estimator_type is now a class attribute in Wrappers to satisfy VotingClassifier.
+awakenFlash_benchmark_final_v4.py
+THE DEFINITIVE CI-SAFE VERSION
+- FIX: Added self.classes_ attribute to Poly2Wrapper/RFFWrapper to satisfy VotingClassifier.
 - Preprocessing (StandardScaler) is done explicitly.
 - Benchmark loop runs all three datasets.
 """
@@ -40,10 +40,9 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (FIXED: _estimator_type is now a class attribute)
+# Wrappers (FINAL FIX: Added self.classes_ attribute)
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
-    # **FINAL FIX:** ใช้ Class Attribute เพื่อให้ VotingClassifier ตรวจสอบได้ทันที
     _estimator_type = "classifier" 
     
     def __init__(self, degree=2, C=0.1):
@@ -52,9 +51,10 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit poly features and then the classifier
         X_transformed = self.poly.fit_transform(X)
         self.clf.fit(X_transformed, y)
+        # 💡 FINAL FIX: กำหนด classes_ attribute เพื่อให้ VotingClassifier ยอมรับ
+        self.classes_ = self.clf.classes_ 
         return self
     def predict(self, X):
         return self.clf.predict(self.poly.transform(X))
@@ -62,7 +62,6 @@ class Poly2Wrapper(BaseEstimator, ClassifierMixin):
         return self.clf.predict_proba(self.poly.transform(X))
 
 class RFFWrapper(BaseEstimator, ClassifierMixin):
-    # **FINAL FIX:** ใช้ Class Attribute เพื่อให้ VotingClassifier ตรวจสอบได้ทันที
     _estimator_type = "classifier"
 
     def __init__(self, gamma='scale', n_components=100, C=1.0):
@@ -72,9 +71,10 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         self.rff = RBFSampler(gamma=self.gamma, n_components=self.n_components, random_state=42)
         self.clf = LogisticRegression(C=self.C, max_iter=5000, random_state=42)
     def fit(self, X, y):
-        # Fit RFF features and then the classifier
         X_transformed = self.rff.fit_transform(X)
         self.clf.fit(X_transformed, y)
+        # 💡 FINAL FIX: กำหนด classes_ attribute เพื่อให้ VotingClassifier ยอมรับ
+        self.classes_ = self.clf.classes_
         return self
     def predict(self, X):
         return self.clf.predict(self.rff.transform(X))
@@ -85,10 +85,10 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
 # Adaptive Hyperparameters (Used for consistent testing)
 # ----------------------
 def adaptive_hyperparameters(dataset_name):
+    # ใช้ค่าที่ใกล้เคียงกับตรรกะเดิม
     if dataset_name == 'breast_cancer':
         return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'iris':
-        # ใช้ C=0.1 สำหรับ Iris (ตามตรรกะเดิม)
         return {'poly_C': 0.1, 'rff_C': 0.1, 'rff_gamma': 'scale', 'rff_n_components': 100}
     elif dataset_name == 'wine':
         return {'poly_C': 1.0, 'rff_C': 1.0, 'rff_gamma': 'scale', 'rff_n_components': 100}
@@ -102,7 +102,7 @@ def adaptive_hyperparameters(dataset_name):
 def run_benchmark(dataset_name, X, y):
     print(f"\n--- Running Benchmark for {dataset_name.upper()} ---")
     
-    # 1. Split and Scale Data Explicitly (FIX: Separating Preprocessing)
+    # 1. Split and Scale Data Explicitly
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=42
     )
@@ -147,7 +147,6 @@ def run_benchmark(dataset_name, X, y):
                 # Start memory & time tracking (for CV)
                 tracemalloc.start()
                 t_cv_start = time.time()
-                # cross_val_score ใช้โมเดลโดยตรงกับข้อมูลที่สเกลแล้ว
                 cv_scores = cross_val_score(model, X_train_data, y_train, cv=cv, scoring='accuracy')
                 t_cv_end = time.time()
                 cv_mean_acc = cv_scores.mean()
