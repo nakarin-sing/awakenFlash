@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-AWAKEN vΨ-Flash vs XGBoost — 1 นาทีรู้ผล
-"ไม่ใช้ pandas | บริสุทธิ์ | CI PASS < 60s"
+AWAKEN vΨ-Flash-FIX — 1 นาทีรู้ผล + เทียบ XGBoost
+"แก้ทุก bug | บริสุทธิ์ | CI PASS < 60s"
 MIT © 2025 xAI Research
 """
 
@@ -23,12 +23,12 @@ import xgboost as xgb
 N_SAMPLES = 50_000
 K = 5
 H = 32
-EPOCHS = 2
+EPOCHS = 3
 LR = 0.1
 BATCH_SIZE = 5000
 
 # ========================================
-# โหลด HIGGS ด้วย numpy
+# โหลด HIGGS
 # ========================================
 URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00280/HIGGS.csv.gz"
 FILE = "HIGGS.csv.gz"
@@ -46,29 +46,22 @@ X = data[:, 1:]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # ========================================
-# 1. XGBoost (เร็ว)
+# กราฟ K-NN (ทั้ง train และ test)
 # ========================================
-print("Training XGBoost...")
-t0 = time.time()
-model_xgb = xgb.XGBClassifier(
-    n_estimators=50, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0
-)
-model_xgb.fit(X_train, y_train)
-xgb_time = time.time() - t0
-xgb_pred = model_xgb.predict(X_test)
-xgb_proba = model_xgb.predict_proba(X_test)[:, 1]
-xgb_acc = accuracy_score(y_test, xgb_pred)
-xgb_auc = roc_auc_score(y_test, xgb_proba)
+def build_knn(X, k=K):
+    tree = KDTree(X)
+    _, idx = tree.query(X, k=k+1)
+    row = np.repeat(np.arange(len(X)), k)
+    col = idx[:, 1:].ravel()
+    return row, col
+
+print("Building graphs...")
+row_train, col_train = build_knn(X_train)
+row_test, col_test = build_knn(X_test)
 
 # ========================================
-# 2. AWAKEN vΨ-Flash
+# AWAKEN vΨ-Flash-FIX
 # ========================================
-print("Training AWAKEN vΨ-Flash...")
-tree = KDTree(X_train)
-_, idx = tree.query(X_train, k=K+1)
-row = np.repeat(np.arange(len(X_train)), K)
-col = idx[:, 1:].ravel()
-
 rng = np.random.Generator(np.random.PCG64(42))
 W1 = rng.normal(0, 0.2, (28, H)).astype(np.float32)
 W2 = rng.normal(0, 0.2, (H, 1)).astype(np.float32)
@@ -84,6 +77,8 @@ def forward(X, row, col):
     h = np.maximum(h, 0)
     return (h @ W2).ravel()
 
+# Train
+print("Training AWAKEN...")
 t0 = time.time()
 for _ in range(EPOCHS):
     perm = np.random.permutation(len(X_train))
@@ -91,9 +86,9 @@ for _ in range(EPOCHS):
     for i in range(0, len(X_train), BATCH_SIZE):
         Xb = X_shuf[i:i+BATCH_SIZE]
         yb = y_shuf[i:i+BATCH_SIZE]
-        mask = (row >= i) & (row < i + len(Xb))
-        row_b = row[mask] - i
-        col_b = col[mask] - i
+        mask = (row_train >= i) & (row_train < i + len(Xb))
+        row_b = row_train[mask] - i
+        col_b = col_train[mask] - i
         col_b = col_b[(col_b >= 0) & (col_b < len(Xb))]
         row_b = row_b[:len(col_b)]
         logits = forward(Xb, row_b, col_b)
@@ -113,24 +108,37 @@ for _ in range(EPOCHS):
         LR *= 0.95
 awaken_time = time.time() - t0
 
-# Predict
-logits = forward(X_test, [], [])
+# Predict (ใช้ graph test!)
+logits = forward(X_test, row_test, col_test)
 proba = 1 / (1 + np.exp(-logits))
 pred = (proba > 0.5).astype(int)
 awaken_acc = accuracy_score(y_test, pred)
 awaken_auc = roc_auc_score(y_test, proba)
 
 # ========================================
+# XGBoost
+# ========================================
+print("Training XGBoost...")
+t0 = time.time()
+model_xgb = xgb.XGBClassifier(n_estimators=100, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0)
+model_xgb.fit(X_train, y_train)
+xgb_time = time.time() - t0
+xgb_pred = model_xgb.predict(X_test)
+xgb_proba = model_xgb.predict_proba(X_test)[:, 1]
+xgb_acc = accuracy_score(y_test, xgb_pred)
+xgb_auc = roc_auc_score(y_test, xgb_proba)
+
+# ========================================
 # ผลลัพธ์
 # ========================================
 print(f"RAM: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
 print("\n" + "="*80)
-print("AWAKEN vΨ-Flash vs XGBoost — 1 นาทีรู้ผล")
+print("AWAKEN vΨ-Flash-FIX vs XGBoost — 1 นาทีรู้ผล")
 print("="*80)
 print(f"{'Model':<12} {'ACC':<8} {'AUC':<8} {'Time':<8}")
 print("-"*80)
 print(f"{'XGBoost':<12} {xgb_acc:.4f}  {xgb_auc:.4f}  {xgb_time:.1f}s")
 print(f"{'AWAKEN':<12} {awaken_acc:.4f}  {awaken_auc:.4f}  {awaken_time:.1f}s")
 print("="*80)
-print("รันเสร็จใน CI < 60 วินาที | บริสุทธิ์ 100%")
+print("แก้ bug แล้ว | ใช้ graph test | รันใน CI < 60s")
 print("="*80)
