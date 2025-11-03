@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash vΩ.11.1 — MICRO ENSEMBLE CORE (Mode Fix)
-"Fixing the dimension issue in scipy.stats.mode output."
+awakenFlash vΩ.12 — UNIFIED FINAL CORE (Skew Correction Test)
+"The Ultimate OneStep+ Architecture: Speed, ACC, Stability, and Skew Handling."
 MIT © 2025 xAI Research
 """
 
@@ -13,15 +13,16 @@ from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 import resource
-from scipy.stats import mode # Required for Ensemble Voting
+# from scipy.stats import mode # No longer needed
 
 # ========================================
-# ONESTEP+ ADAPTIVE CORE (vΩ.10 base)
+# ONESTEP+ ADAPTIVE CORE (Final Unified Model)
 # ========================================
 
 class OneStep:
     """
-    Adaptive Core 1-Step Model with Minimal Quadratic Features and Tikhonov Damping.
+    Final Unified Adaptive Core 1-Step Model (vΩ.10/vΩ.12)
+    Features: Minimal Quadratic Expansion, Adaptive Tikhonov Regularization.
     """
     def _add_minimal_features(self, X):
         X = X.astype(np.float32)
@@ -29,7 +30,7 @@ class OneStep:
         # 1. Base Features (with Bias)
         X_b = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
-        # 2. Minimal Quadratic Terms (X^2)
+        # 2. Minimal Quadratic Terms (X^2) 
         X_quad = X**2
         
         # 3. Concatenate all features
@@ -47,7 +48,7 @@ class OneStep:
         C = 1e-3 
         lambda_adaptive = C * np.mean(np.diag(XTX)) 
         
-        # Solve Linear System
+        # Solve Linear System: W = (G + lambda*I)^-1 X^T Y
         I = np.eye(XTX.shape[0], dtype=np.float32)
         XTY = X_final.T @ y_onehot
         
@@ -56,48 +57,6 @@ class OneStep:
     def predict(self, X):
         X_final = self._add_minimal_features(X)
         return (X_final @ self.W).argmax(axis=1)
-
-# ========================================
-# ONESTEP MICRO ENSEMBLE (vΩ.11.1 Fix)
-# ========================================
-
-class OneStepMicroEnsemble:
-    """
-    Micro Ensemble of N OneStep+ Models trained on bootstrapped samples (Bagging).
-    """
-    def __init__(self, n_estimators=5, random_state=42):
-        self.n_estimators = n_estimators
-        self.random_state = random_state
-        self.estimators = []
-
-    def fit(self, X, y):
-        rng = np.random.default_rng(self.random_state)
-        self.estimators = []
-        n_samples = X.shape[0]
-
-        for i in range(self.n_estimators):
-            # 1. Bootstrapping
-            indices = rng.choice(n_samples, size=n_samples, replace=True)
-            X_bag = X[indices]
-            y_bag = y[indices]
-
-            # 2. Train OneStep+ Core
-            m = OneStep()
-            m.fit(X_bag, y_bag)
-            self.estimators.append(m)
-
-    def predict(self, X):
-        # 3. Prediction and Hard Voting
-        predictions = []
-        for m in self.estimators:
-            predictions.append(m.predict(X))
-
-        predictions = np.array(predictions)
-        
-        # 💡 FIX: ใช้ .ravel() เพื่อรับประกันว่าผลลัพธ์เป็นอาร์เรย์ 1 มิติเสมอ
-        # [0] เพื่อเข้าถึง array ของค่า Mode
-        final_preds = mode(predictions, axis=0)[0].ravel() 
-        return final_preds
 
 # ========================================
 # OPTIMIZED BENCHMARK EXECUTION
@@ -115,15 +74,21 @@ def benchmark_optimized():
 
     xgb_total_time = 0
     onestep_total_time = 0
-    onestep_ensemble_time = 0
 
     for name, data in datasets:
         X, y = data.data.astype(np.float32), data.target
         
-        # Pre-processing Strategy: Scaling
-        X = (X - X.mean(axis=0)) / X.std(axis=0) 
+        # 💡 NEW: Skew Correction (Log Transform) + Scaling 
+        # เพื่อจำลอง Real-World Handling สำหรับข้อมูลที่มีความเบ้ (Skewed)
         
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # 1. Log Transform (Simple Skew Handling - ต้องจัดการค่า 0 ด้วย)
+        # ใช้ np.log1p เพื่อจัดการกับค่าที่เป็นศูนย์ (log(1+x))
+        X_skew_corrected = np.log1p(X) 
+        
+        # 2. Standard Scaling (Normalization)
+        X_final = (X_skew_corrected - X_skew_corrected.mean(axis=0)) / X_skew_corrected.std(axis=0) 
+        
+        X_train, X_test, y_train, y_test = train_test_split(X_final, y, test_size=0.2, random_state=42)
 
         results = []
 
@@ -136,22 +101,13 @@ def benchmark_optimized():
         results.append(("XGBoost", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_xgb))
         xgb_total_time += t_xgb
 
-        # OneStep (Adaptive Core) - เพื่อเปรียบเทียบ
+        # OneStep (Final Unified Core)
         t0 = time.time()
         m = OneStep(); m.fit(X_train, y_train)
         t_onestep = time.time() - t0
         pred = m.predict(X_test)
         results.append(("OneStep", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_onestep))
         onestep_total_time += t_onestep
-        
-        # NEW: OneStep Micro Ensemble
-        t0 = time.time()
-        m_ensemble = OneStepMicroEnsemble(n_estimators=5); m_ensemble.fit(X_train, y_train)
-        t_ensemble = time.time() - t0
-        pred_ensemble = m_ensemble.predict(X_test)
-        
-        results.append(("MicroEnsm", accuracy_score(y_test, pred_ensemble), f1_score(y_test, pred_ensemble, average='weighted'), t_ensemble))
-        onestep_ensemble_time += t_ensemble
 
         # PRINT
         print(f"\n===== {name} =====")
@@ -161,15 +117,15 @@ def benchmark_optimized():
 
     print(f"\nRAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
-    if onestep_ensemble_time > 0:
-        speedup = xgb_total_time / onestep_ensemble_time
+    if onestep_total_time > 0:
+        speedup = xgb_total_time / onestep_total_time
     else:
         speedup = 0
         
     print("\n" + "="*60)
-    print("AWAKEN vΩ.11.1 — MICRO ENSEMBLE CORE (Mode Fix Test)")
-    print(f"Total Speedup (XGB/MicroEnsm): {speedup:.1f}x")
-    print("Goal: Fix the voting error and verify MicroEnsm performance.")
+    print("AWAKEN vΩ.12 — UNIFIED FINAL CORE (Skew Correction Test)")
+    print(f"Total Speedup (XGB/OneStep): {speedup:.1f}x")
+    print("Goal: Confirm ACC stability after applying Skew Correction.")
     print("============================================================")
 
 if __name__ == "__main__":
