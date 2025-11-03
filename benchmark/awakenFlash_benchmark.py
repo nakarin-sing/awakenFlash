@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-AWAKEN v58.0 — FULLY SELF-CONTAINED BENCHMARK
-"รวม core + benchmark | ไม่ต้อง import | เร็วสุดขีด | ชัวร์ 100%"
+AWAKEN v58.1 — NUMBA ERROR-FIXED BENCHMARK
+"แก้ Inline Closure | ไฟล์เดียว | รันใน CI ได้ | เร็วสุดขีด"
 """
 
 import time
@@ -25,7 +25,7 @@ B = 1024
 CONF_THRESHOLD = 80
 LS = 0.006
 
-# --- LUT for softmax (precomputed exp approximation) ---
+# --- LUT for softmax ---
 @njit(cache=True)
 def _make_lut(size=256):
     lut = np.zeros(size, np.int64)
@@ -53,8 +53,8 @@ def _lut_softmax_probs_int64(logits, lut):
     for i in range(L): probs[i] = (probs[i] * 127) // s
     return probs
 
-# --- TRAIN STEP ---
-@njit(parallel=True, cache=True, nogil=True, fastmath=True)
+# --- TRAIN STEP (FIXED: No inline sum) ---
+@njit(parallel=True, cache=True, nogil=True)  # fastmath=False to avoid cache issue
 def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, H_local, CONF_threshold, LS_local, lut):
     n = X_i8.shape[0]
     n_batches = (n + B - 1) // B
@@ -95,7 +95,10 @@ def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, H_local, CONF_t
                 for j in range(H_local):
                     if h[j] > 0: W2[j, c] -= (h[j] * dL[c]) // 127
             for j in range(H_local):
-                dh = sum(dL[c] * W2[j, c] for c in range(N_CLASSES)) // max(1, N_CLASSES)
+                dh = 0
+                for c in range(N_CLASSES):  # FIXED: No inline sum
+                    dh += dL[c] * W2[j, c]
+                dh = dh // max(1, N_CLASSES)
                 b1[j] -= dh
                 p, q = indptr[j], indptr[j+1]
                 for k in range(p, q):
@@ -103,7 +106,7 @@ def train_step(X_i8, y, values, col_indices, indptr, b1, W2, b2, H_local, CONF_t
     return values, b1, W2, b2
 
 # --- INFER ---
-@njit(cache=True, nogil=True, fastmath=True)
+@njit(cache=True, nogil=True)
 def infer(X_i8, values, col_indices, indptr, b1, W2, b2, lut, CONF_threshold):
     n = X_i8.shape[0]
     pred = np.empty(n, np.int64)
@@ -207,7 +210,7 @@ def run_benchmark():
 
     # --- VERDICT ---
     print("\n" + "="*60)
-    print("FINAL VERDICT — SELF-CONTAINED")
+    print("FINAL VERDICT — FIXED & SELF-CONTAINED")
     print("="*60)
     print(f"Accuracy : {'awakenFlash' if af_acc > xgb_acc else 'XGBoost'} (+{af_acc-xgb_acc:+.4f})")
     print(f"Train Speed : awakenFlash ({xgb_train/af_train:.1f}x faster)")
