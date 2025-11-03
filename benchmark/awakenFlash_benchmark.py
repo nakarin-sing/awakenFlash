@@ -1,140 +1,92 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-AWAKEN vΨ-UltraFast — 30 วินาทีรู้ผล
-"ไม่ใช้ pandas | ไม่ดาวน์โหลด | ใช้ synthetic data | CI PASS < 60s"
-MIT © 2025 xAI Research
-"""
+# awaken_realworld_benchmark.py
+# =============================================
+# FAIR BENCHMARK — AWAKEN vΩ vs XGBoost (UCI)
+# =============================================
 
-import time
-import numpy as np
-from sklearn.metrics import accuracy_score, roc_auc_score
+import time, psutil, numpy as np, pandas as pd
+from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
-from scipy.spatial import KDTree
-import resource
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.metrics import accuracy_score, f1_score
+from sklearn.kernel_approximation import RBFSampler
 import xgboost as xgb
 
-# ========================================
-# CONFIG (เร็วสุดขีด)
-# ========================================
-N_SAMPLES = 100_000
-N_FEATURES = 28
-N_CLASSES = 2
-K = 5
-H = 32
-EPOCHS = 1
-LR = 0.1
-BATCH_SIZE = 10000
+def mem_now_mb():
+    return psutil.Process().memory_info().rss / (1024 ** 2)
 
-# ========================================
-# สร้าง synthetic data แบบ HIGGS (เร็ว)
-# ========================================
-print("Generating synthetic HIGGS-like data...")
-rng = np.random.Generator(np.random.PCG64(42))
-X = rng.normal(0, 1, (N_SAMPLES, N_FEATURES)).astype(np.float32)
-# สร้าง interaction เหมือน HIGGS
-X[:, 10:15] = X[:, :5] * X[:, 5:10] + rng.normal(0, 0.1, (N_SAMPLES, 5))
-# label จาก linear combination + noise
-weights = rng.normal(0, 1, N_FEATURES)
-logits = X @ weights
-probs = 1 / (1 + np.exp(-logits))
-y = (probs > 0.5).astype(int)
+def awaken_pinv(X, Y):
+    W = np.linalg.pinv(X) @ Y
+    return W
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+def awaken_ridge(X, Y, l2=1e-2):
+    XtX = X.T @ X
+    W = np.linalg.solve(XtX + l2 * np.eye(X.shape[1]), X.T @ Y)
+    return W
 
-# ========================================
-# กราฟ K-NN (เร็ว)
-# ========================================
-def build_knn(X, k=K):
-    tree = KDTree(X)
-    _, idx = tree.query(X, k=k+1)
-    row = np.repeat(np.arange(len(X)), k)
-    col = idx[:, 1:].ravel()
-    return row, col
+def predict_linear(X, W):
+    return (X @ W > 0.5).astype(int)
 
-row_train, col_train = build_knn(X_train)
-row_test, col_test = build_knn(X_test)
+def run_awaken_variant(name, X_train, X_test, y_train, y_test, transform=None):
+    start_ram = mem_now_mb()
+    start_time = time.time()
 
-# ========================================
-# AWAKEN vΨ-UltraFast
-# ========================================
-rng = np.random.Generator(np.random.PCG64(42))
-W1 = rng.normal(0, 0.2, (N_FEATURES, H)).astype(np.float32)
-W2 = rng.normal(0, 0.2, (H, 1)).astype(np.float32)
+    Xtr = transform(X_train) if transform else X_train
+    Xte = transform(X_test) if transform else X_test
 
-def forward(X, row, col):
-    h = X @ W1
-    h = np.maximum(h, 0)
-    h_agg = np.zeros_like(h)
-    nodes = np.unique(row)
-    for i in nodes:
-        neigh = col[row == i]
-        if len(neigh): h_agg[i] = np.mean(h[neigh])
-    h = h + 0.3 * h_agg
-    h = np.maximum(h, 0)
-    return (h @ W2).ravel()
+    W = awaken_ridge(Xtr, y_train.reshape(-1,1), l2=1e-2)
+    y_pred = predict_linear(Xte, W)
 
-# Train 1 epoch
-print("Training AWAKEN...")
-t0 = time.time()
-perm = np.random.permutation(len(X_train))
-X_shuf, y_shuf = X_train[perm], y_train[perm]
-for i in range(0, len(X_train), BATCH_SIZE):
-    Xb = X_shuf[i:i+BATCH_SIZE]
-    yb = y_shuf[i:i+BATCH_SIZE]
-    mask = (row_train >= i) & (row_train < i + len(Xb))
-    row_b = row_train[mask] - i
-    col_b = col_train[mask] - i
-    col_b = col_b[(col_b >= 0) & (col_b < len(Xb))]
-    row_b = row_b[:len(col_b)]
-    logits = forward(Xb, row_b, col_b)
-    prob = 1 / (1 + np.exp(-logits))
-    d_logits = (prob - yb) / len(yb)
-    h = np.maximum(Xb @ W1, 0)
-    h_agg = np.zeros_like(h)
-    for node in np.unique(row_b):
-        neigh = col_b[row_b == node]
-        if len(neigh): h_agg[node] = np.mean(h[neigh])
-    h = h + 0.3 * h_agg
-    h = np.maximum(h, 0)
-    d_h = d_logits[:, None] @ W2.T
-    d_h *= (h > 0)
-    W2 -= LR * (h.T @ d_logits[:, None])
-    W1 -= LR * (Xb.T @ d_h)
-awaken_time = time.time() - t0
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    end_time = time.time()
+    end_ram = mem_now_mb()
+    return dict(model=name, acc=acc, f1=f1, time=end_time-start_time, ram=end_ram-start_ram)
 
-# Predict
-logits = forward(X_test, row_test, col_test)
-proba = 1 / (1 + np.exp(-logits))
-pred = (proba > 0.5).astype(int)
-awaken_acc = accuracy_score(y_test, pred)
-awaken_auc = roc_auc_score(y_test, proba)
+# ===================== LOAD DATA =====================
+X, y = load_breast_cancer(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+scaler = StandardScaler().fit(X_train)
+X_train, X_test = scaler.transform(X_train), scaler.transform(X_test)
 
-# ========================================
-# XGBoost
-# ========================================
-print("Training XGBoost...")
-t0 = time.time()
-model_xgb = xgb.XGBClassifier(n_estimators=50, max_depth=6, n_jobs=-1, tree_method='hist', verbosity=0)
-model_xgb.fit(X_train, y_train)
-xgb_time = time.time() - t0
-xgb_pred = model_xgb.predict(X_test)
-xgb_proba = model_xgb.predict_proba(X_test)[:, 1]
-xgb_acc = accuracy_score(y_test, xgb_pred)
-xgb_auc = roc_auc_score(y_test, xgb_proba)
+# ===================== RUN MODELS =====================
+results = []
 
-# ========================================
-# ผลลัพธ์
-# ========================================
-print(f"RAM: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
-print(f"Total Time: {awaken_time + xgb_time:.1f}s")
-print("\n" + "="*80)
-print("AWAKEN vΨ-UltraFast vs XGBoost — 30 วินาทีรู้ผล")
-print("="*80)
-print(f"{'Model':<12} {'ACC':<8} {'AUC':<8} {'Time':<8}")
-print("-"*80)
-print(f"{'XGBoost':<12} {xgb_acc:.4f}  {xgb_auc:.4f}  {xgb_time:.1f}s")
-print(f"{'AWAKEN':<12} {awaken_acc:.4f}  {awaken_auc:.4f}  {awaken_time:.1f}s")
-print("="*80)
-print("ไม่ดาวน์โหลด | ไม่ใช้ pandas | รันใน CI < 30s")
-print("="*80)
+# 1️⃣ AWAKEN Pure (pinv)
+results.append(run_awaken_variant("AWAKEN-Pure (pinv)", X_train, X_test, y_train, y_test))
+
+# 2️⃣ AWAKEN Ridge
+results.append(run_awaken_variant("AWAKEN-Ridge (λ=1e-2)", X_train, X_test, y_train, y_test))
+
+# 3️⃣ AWAKEN + Poly(2)
+poly = PolynomialFeatures(2, include_bias=False).fit(X_train)
+results.append(run_awaken_variant("AWAKEN-Poly2", X_train, X_test, y_train, y_test, transform=poly.transform))
+
+# 4️⃣ AWAKEN + RFF (approx RBF)
+rff = RBFSampler(gamma=0.3, n_components=512, random_state=0).fit(X_train)
+results.append(run_awaken_variant("AWAKEN-RFF512", X_train, X_test, y_train, y_test, transform=rff.transform))
+
+# 5️⃣ XGBoost baseline
+start_ram = mem_now_mb()
+start_time = time.time()
+xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', n_estimators=200)
+xgb_model.fit(X_train, y_train)
+y_pred = xgb_model.predict(X_test)
+acc = accuracy_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+results.append(dict(model="XGBoost", acc=acc, f1=f1,
+                    time=time.time()-start_time, ram=mem_now_mb()-start_ram))
+
+# ===================== REPORT =====================
+df = pd.DataFrame(results)
+df["acc"] = df["acc"].apply(lambda x: f"{x:.4f}")
+df["f1"] = df["f1"].apply(lambda x: f"{x:.4f}")
+df["time"] = df["time"].apply(lambda x: f"{x:.3f}s")
+df["ram"] = df["ram"].apply(lambda x: f"~{x:.1f}MB")
+
+print("\n================================================================================")
+print("AWAKEN vΩ — REAL WORLD BENCHMARK (Breast Cancer)")
+print("================================================================================")
+print(df.to_string(index=False))
+print("================================================================================")
+print("บริสุทธิ์ | ยุติธรรม | เร็วเหมือนแสง | หล่อแบบพระเอกไทย")
+print("================================================================================")
