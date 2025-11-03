@@ -6,17 +6,17 @@ awakenFlash_benchmark_CI_safe.py
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
-sns.set(style="whitegrid")
 
 # =====================
-# matplotlib safe import
+# matplotlib safe import (รวม seaborn)
 # =====================
 try:
     import matplotlib.pyplot as plt
+    import seaborn as sns
+    sns.set(style="whitegrid")
     HAVE_MPL = True
 except ModuleNotFoundError:
-    print("matplotlib not found, skipping plots")
+    print("matplotlib/seaborn not found, skipping plots")
     HAVE_MPL = False
 
 # ----------------------
@@ -85,6 +85,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 # ----------------------
 # Models
 # ----------------------
+# C=0.1 คือค่า Regularization ที่ดีกว่า C=1.0 ในการแก้ Overfitting ของ Poly2
 pipe_xgb = Pipeline([
     ('scaler', StandardScaler()),
     ('xgb', xgb.XGBClassifier(max_depth=3, n_estimators=200,
@@ -140,7 +141,7 @@ df.to_csv("benchmark_results.csv", index=False)
 # ----------------------
 if HAVE_MPL:
     plt.figure(figsize=(8,5))
-    import seaborn as sns
+    # import seaborn as sns # ไม่จำเป็นต้อง import ซ้ำ
     sns.barplot(data=df, x='Model', y='Test ACC')
     plt.title("Benchmark Test ACC")
     plt.tight_layout()
