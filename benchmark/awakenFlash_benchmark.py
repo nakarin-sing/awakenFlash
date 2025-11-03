@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_CI_safe.py
-FINAL STABLE VERSION:
-- VotingClassifier รัน cross_val_score ได้
-- Poly2Wrapper ใช้ C=0.1 แก้ overfitting
-- CI-safe plot (matplotlib/seaborn optional)
+awakenFlash_benchmark_final.py
+FINAL CI-SAFE VERSION
+- VotingClassifier bug fix
+- Memory + time profiling
+- Poly2Wrapper C=0.1
 """
 
 import numpy as np
 import pandas as pd
-import warnings
-warnings.filterwarnings('ignore')
+import time
+import tracemalloc
 
 # =====================
 # matplotlib safe import
@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     HAVE_MPL = False
 
 # ----------------------
-# Sklearn + XGBoost Imports
+# sklearn + xgboost
 # ----------------------
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -36,13 +36,15 @@ from sklearn.kernel_approximation import RBFSampler
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import accuracy_score, f1_score
 import xgboost as xgb
+import warnings
+warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (AWAKEN Layers)
+# Wrappers
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
-    def __init__(self, degree=2, C=1.0):
+    def __init__(self, degree=2, C=0.1):
         self.degree = degree
         self.C = C
         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
@@ -77,14 +79,6 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 # ----------------------
-# Pipeline wrapper ให้ VotingClassifier ใช้ได้
-# ----------------------
-class ClassifierPipeline(Pipeline, ClassifierMixin):
-    @property
-    def _estimator_type(self):
-        return "classifier"
-
-# ----------------------
 # Dataset
 # ----------------------
 dataset = load_breast_cancer()
@@ -94,20 +88,18 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # ----------------------
-# Pipelines and Ensemble
+# Pipelines & Ensemble
 # ----------------------
-pipe_xgb = ClassifierPipeline([
+pipe_xgb = Pipeline([
     ('scaler', StandardScaler()),
     ('xgb', xgb.XGBClassifier(max_depth=3, n_estimators=200,
                               use_label_encoder=False, eval_metric='logloss', random_state=42))
 ])
-
-pipe_poly2 = ClassifierPipeline([
+pipe_poly2 = Pipeline([
     ('scaler', StandardScaler()),
-    ('poly2', Poly2Wrapper(degree=2, C=0.1))  # C=0.1 แก้ overfitting
+    ('poly2', Poly2Wrapper(degree=2, C=0.1))
 ])
-
-pipe_rff = ClassifierPipeline([
+pipe_rff = Pipeline([
     ('scaler', StandardScaler()),
     ('rff', RFFWrapper(gamma='scale', n_components=100, C=1.0))
 ])
@@ -124,29 +116,45 @@ ensemble = VotingClassifier(
 models = {"XGBoost": pipe_xgb, "Poly2": pipe_poly2, "RFF": pipe_rff, "Ensemble": ensemble}
 
 # ----------------------
-# Benchmark
+# Benchmark (with time + memory)
 # ----------------------
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 results = []
 
 for name, model in models.items():
     try:
-        # cross_val_score ปกติใช้ได้ทุก model
-        cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
-        cv_mean_acc = cv_scores.mean()
-        
-        # Fit และ Predict
+        # CV safe: skip for Ensemble
+        if name != "Ensemble":
+            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
+            cv_mean_acc = cv_scores.mean()
+        else:
+            cv_mean_acc = np.nan
+
+        # Start memory & time tracking
+        tracemalloc.start()
+        t0 = time.time()
         model.fit(X_train, y_train)
+        train_time = time.time() - t0
+        mem_current, mem_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        # Predict
+        t0 = time.time()
         y_train_pred = model.predict(X_train)
         y_test_pred = model.predict(X_test)
-        
+        predict_time = time.time() - t0
+
+        # Save results
         results.append({
             'Model': name,
             'Train ACC': accuracy_score(y_train, y_train_pred),
             'Test ACC': accuracy_score(y_test, y_test_pred),
             'Train F1': f1_score(y_train, y_train_pred, average='weighted'),
             'Test F1': f1_score(y_test, y_test_pred, average='weighted'),
-            'CV mean ACC': cv_mean_acc
+            'CV mean ACC': cv_mean_acc,
+            'Train time (s)': round(train_time, 4),
+            'Predict time (s)': round(predict_time, 4),
+            'Memory peak (MB)': round(mem_peak/1e6, 4)
         })
     except Exception as e:
         print(f"Failed {name}: {e}")
