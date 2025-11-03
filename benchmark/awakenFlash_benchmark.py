@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash vΩ.9 — UNIFIED CHAMPION (OneStep + Minimal Quad)
-"Final Challenge: OneStep 1.0000 ACC in Iris"
+awakenFlash vΩ.10 — ADAPTIVE CORE (Adaptive Tikhonov + Minimal Quad)
+"Focus: Stability and Real-World Handling"
 MIT © 2025 xAI Research
 """
 
@@ -15,26 +15,20 @@ from sklearn.metrics import accuracy_score, f1_score
 import resource
 
 # ========================================
-# OPTIMIZED MODELS (float32 + pinv + Minimal Transformation)
+# OPTIMIZED MODELS (float32 + Adaptive Tikhonov Solver)
 # ========================================
 
 class OneStep:
     """
-    Final Unified 1-Step Model with Minimal Quadratic Feature Addition
-    Designed to achieve 1.0000 ACC across all datasets with maximum speed.
+    Adaptive Core 1-Step Model with Minimal Quadratic Features and Tikhonov Damping.
     """
     def _add_minimal_features(self, X):
         X = X.astype(np.float32)
         
-        # 💡 Minimal Feature Addition Strategy: 
-        # เพิ่ม Quadratic term ของฟีเจอร์หลัก (เช่น ฟีเจอร์ 1, 2) เพื่อ Non-Linearity 
-        # (X[:, 0]**2 และ X[:, 1]**2) ซึ่งเป็นกลยุทธ์ที่เรียบง่ายและเร็วที่สุด
-        
         # 1. Base Features (with Bias)
         X_b = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
-        # 2. Minimal Quadratic Terms (ใช้เพียง 2-3 ฟีเจอร์หลัก)
-        # เนื่องจาก Iris มี 4 ฟีเจอร์ (0-3), เราจะเพิ่มฟีเจอร์กำลังสองทั้งหมด 4 ตัว
+        # 2. Minimal Quadratic Terms (X^2) - ช่วยจับ Non-Linearity ใน Iris
         X_quad = X**2
         
         # 3. Concatenate all features
@@ -45,8 +39,25 @@ class OneStep:
         X_final = self._add_minimal_features(X)
         y_onehot = np.eye(y.max() + 1, dtype=np.float32)[y]
         
-        # 1-step solution (pinv)
-        self.W = np.linalg.pinv(X_final) @ y_onehot
+        # 💡 Adaptive Tikhonov Regularization (Damping)
+        # W = (X^T X + lambda*I)^-1 X^T Y
+        
+        # 1. Calculate X^T X
+        XTX = X_final.T @ X_final
+        
+        # 2. Adaptive Lambda Calculation
+        # C เป็นค่าคงที่ควบคุมความแรงของ Regularization (Ridge)
+        C = 1e-3 
+        # Lambda ปรับตาม Scale ของเมทริกซ์ XTX (ซึ่งสัมพันธ์กับ Variance ของฟีเจอร์)
+        # นี่คือการทำให้ Regularization ปรับตัวตามขนาดของชุดข้อมูล
+        lambda_adaptive = C * np.mean(np.diag(XTX)) 
+        
+        # 3. Solve Linear System
+        I = np.eye(XTX.shape[0], dtype=np.float32)
+        XTY = X_final.T @ y_onehot
+        
+        # ใช้ np.linalg.solve (ไม่ใช่ pinv) เพื่อความเร็วและเสถียรภาพสูงสุด
+        self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY) 
         
     def predict(self, X):
         X_final = self._add_minimal_features(X)
@@ -58,7 +69,6 @@ class OneStep:
 def benchmark_optimized():
     print(f"RAM Start: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
-    # Adjusted XGBoost config for baseline speed
     xgb_config = dict(n_estimators=50, max_depth=4, n_jobs=1, verbosity=0, tree_method='hist')
     
     datasets = [
@@ -73,7 +83,8 @@ def benchmark_optimized():
     for name, data in datasets:
         X, y = data.data.astype(np.float32), data.target
         
-        # CRITICAL: Standard Scaling before splitting
+        # 💡 Pre-processing Strategy: Scaling
+        # (Log/Sqrt Transform ควรถูกเพิ่มที่นี่ หากมี Skewness แต่เรายังคงใช้ Scaling เป็นหลัก)
         X = (X - X.mean(axis=0)) / X.std(axis=0) 
         
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -89,7 +100,7 @@ def benchmark_optimized():
         results.append(("XGBoost", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_xgb))
         xgb_total_time += t_xgb
 
-        # OneStep (Unified)
+        # OneStep (Adaptive Core)
         t0 = time.time()
         m = OneStep(); m.fit(X_train, y_train)
         t_onestep = time.time() - t0
@@ -101,23 +112,19 @@ def benchmark_optimized():
         print(f"\n===== {name} =====")
         print(f"{'Model':<10} {'ACC':<8} {'F1':<8} {'Time':<8}")
         for r in results:
-            # ใช้ f1 score ธรรมดาสำหรับ Iris ที่เป็น Multi-Class 
-            # Note: f1_score(average='weighted') มักจะใช้ได้ดีกว่า 'micro' ในชุดข้อมูลที่ไม่สมดุล
-            f1 = r[2] 
-            print(f"{r[0]:<10} {r[1]:.4f}   {f1:.4f}   {r[3]:.4f}s")
+            print(f"{r[0]:<10} {r[1]:.4f}   {r[2]:.4f}   {r[3]:.4f}s")
 
     print(f"\nRAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
-    # Calculate final speedup for the summary
     if onestep_total_time > 0:
         speedup = xgb_total_time / onestep_total_time
     else:
         speedup = 0
         
     print("\n" + "="*60)
-    print("AWAKEN vΩ.9 — UNIFIED CHAMPION (Final Test)")
+    print("AWAKEN vΩ.10 — ADAPTIVE CORE (Real-World Stability Test)")
     print(f"Total Speedup (XGB/OneStep): {speedup:.1f}x")
-    print("Final Goal: OneStep ACC 1.0000 across all datasets.")
+    print("Goal: Maintain 1.0000 ACC while proving superior stability.")
     print("============================================================")
 
 if __name__ == "__main__":
