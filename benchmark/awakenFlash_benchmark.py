@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-awakenFlash vΩ.10 — ADAPTIVE CORE (Adaptive Tikhonov + Minimal Quad)
-"Focus: Stability and Real-World Handling"
+awakenFlash vΩ.11 — MICRO ENSEMBLE CORE (Robustness Test)
+"Goal: Achieve superior robustness and stability against noise."
 MIT © 2025 xAI Research
 """
 
@@ -13,14 +13,16 @@ from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 import resource
+from scipy.stats import mode # Required for Ensemble Voting
 
 # ========================================
-# OPTIMIZED MODELS (float32 + Adaptive Tikhonov Solver)
+# ONESTEP+ ADAPTIVE CORE (vΩ.10 base)
 # ========================================
 
 class OneStep:
     """
     Adaptive Core 1-Step Model with Minimal Quadratic Features and Tikhonov Damping.
+    (Used as the base estimator for the Micro Ensemble)
     """
     def _add_minimal_features(self, X):
         X = X.astype(np.float32)
@@ -28,7 +30,7 @@ class OneStep:
         # 1. Base Features (with Bias)
         X_b = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
-        # 2. Minimal Quadratic Terms (X^2) - ช่วยจับ Non-Linearity ใน Iris
+        # 2. Minimal Quadratic Terms (X^2)
         X_quad = X**2
         
         # 3. Concatenate all features
@@ -39,29 +41,68 @@ class OneStep:
         X_final = self._add_minimal_features(X)
         y_onehot = np.eye(y.max() + 1, dtype=np.float32)[y]
         
-        # 💡 Adaptive Tikhonov Regularization (Damping)
-        # W = (X^T X + lambda*I)^-1 X^T Y
-        
-        # 1. Calculate X^T X
+        # Adaptive Tikhonov Regularization (Damping)
         XTX = X_final.T @ X_final
         
-        # 2. Adaptive Lambda Calculation
-        # C เป็นค่าคงที่ควบคุมความแรงของ Regularization (Ridge)
+        # Adaptive Lambda Calculation
         C = 1e-3 
-        # Lambda ปรับตาม Scale ของเมทริกซ์ XTX (ซึ่งสัมพันธ์กับ Variance ของฟีเจอร์)
-        # นี่คือการทำให้ Regularization ปรับตัวตามขนาดของชุดข้อมูล
         lambda_adaptive = C * np.mean(np.diag(XTX)) 
         
-        # 3. Solve Linear System
+        # Solve Linear System
         I = np.eye(XTX.shape[0], dtype=np.float32)
         XTY = X_final.T @ y_onehot
         
-        # ใช้ np.linalg.solve (ไม่ใช่ pinv) เพื่อความเร็วและเสถียรภาพสูงสุด
         self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY) 
         
     def predict(self, X):
         X_final = self._add_minimal_features(X)
         return (X_final @ self.W).argmax(axis=1)
+
+# ========================================
+# ONESTEP MICRO ENSEMBLE (vΩ.11 New)
+# ========================================
+
+class OneStepMicroEnsemble:
+    """
+    Micro Ensemble of N OneStep+ Models trained on bootstrapped samples (Bagging).
+    Goal: Increase Robustness and stability against noise/outliers.
+    """
+    def __init__(self, n_estimators=5, random_state=42):
+        self.n_estimators = n_estimators
+        self.random_state = random_state
+        self.estimators = []
+
+    def fit(self, X, y):
+        rng = np.random.default_rng(self.random_state)
+        self.estimators = []
+        n_samples = X.shape[0]
+
+        for i in range(self.n_estimators):
+            # 1. Bootstrapping: สุ่มตัวอย่างแบบใส่คืน (Bagging)
+            # สร้างตัวอย่างขนาดเดียวกับชุดฝึก แต่มีการทำซ้ำ
+            indices = rng.choice(n_samples, size=n_samples, replace=True)
+            X_bag = X[indices]
+            y_bag = y[indices]
+
+            # 2. Train OneStep+ Core
+            m = OneStep()  # ใช้ OneStep ที่มี Adaptive Tikhonov 
+            m.fit(X_bag, y_bag)
+            self.estimators.append(m)
+
+    def predict(self, X):
+        # 3. Prediction and Hard Voting
+        predictions = []
+        for m in self.estimators:
+            # เก็บผลทำนายของทุกโมเดล
+            predictions.append(m.predict(X))
+
+        # Hard Voting: หาโหมด (Most Frequent) ของผลทำนายแต่ละจุด
+        predictions = np.array(predictions)
+        
+        # ใช้ scipy.stats.mode เพื่อหาค่าที่ถูกโหวตมากที่สุด
+        # [0] คือค่า Mode, [0] เพื่อเข้าถึง array 1D
+        final_preds = mode(predictions, axis=0)[0][0] 
+        return final_preds
 
 # ========================================
 # OPTIMIZED BENCHMARK EXECUTION
@@ -79,12 +120,12 @@ def benchmark_optimized():
 
     xgb_total_time = 0
     onestep_total_time = 0
+    onestep_ensemble_time = 0
 
     for name, data in datasets:
         X, y = data.data.astype(np.float32), data.target
         
-        # 💡 Pre-processing Strategy: Scaling
-        # (Log/Sqrt Transform ควรถูกเพิ่มที่นี่ หากมี Skewness แต่เรายังคงใช้ Scaling เป็นหลัก)
+        # Pre-processing Strategy: Scaling
         X = (X - X.mean(axis=0)) / X.std(axis=0) 
         
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -100,13 +141,23 @@ def benchmark_optimized():
         results.append(("XGBoost", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_xgb))
         xgb_total_time += t_xgb
 
-        # OneStep (Adaptive Core)
+        # OneStep (Adaptive Core) - เพื่อเปรียบเทียบ
         t0 = time.time()
         m = OneStep(); m.fit(X_train, y_train)
         t_onestep = time.time() - t0
         pred = m.predict(X_test)
         results.append(("OneStep", accuracy_score(y_test, pred), f1_score(y_test, pred, average='weighted'), t_onestep))
         onestep_total_time += t_onestep
+        
+        # 💡 NEW: OneStep Micro Ensemble
+        t0 = time.time()
+        m_ensemble = OneStepMicroEnsemble(n_estimators=5); m_ensemble.fit(X_train, y_train)
+        t_ensemble = time.time() - t0
+        pred_ensemble = m_ensemble.predict(X_test)
+        
+        # เวลาที่ใช้ฝึก Micro Ensemble จะรวมเวลาฝึก 5 โมเดล
+        results.append(("MicroEnsm", accuracy_score(y_test, pred_ensemble), f1_score(y_test, pred_ensemble, average='weighted'), t_ensemble))
+        onestep_ensemble_time += t_ensemble
 
         # PRINT
         print(f"\n===== {name} =====")
@@ -116,15 +167,16 @@ def benchmark_optimized():
 
     print(f"\nRAM End: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB")
     
-    if onestep_total_time > 0:
-        speedup = xgb_total_time / onestep_total_time
+    # คำนวณความเร็วเทียบกับ XGBoost โดยใช้เวลาของ Micro Ensemble
+    if onestep_ensemble_time > 0:
+        speedup = xgb_total_time / onestep_ensemble_time
     else:
         speedup = 0
         
     print("\n" + "="*60)
-    print("AWAKEN vΩ.10 — ADAPTIVE CORE (Real-World Stability Test)")
-    print(f"Total Speedup (XGB/OneStep): {speedup:.1f}x")
-    print("Goal: Maintain 1.0000 ACC while proving superior stability.")
+    print("AWAKEN vΩ.11 — MICRO ENSEMBLE CORE (Robustness Test)")
+    print(f"Total Speedup (XGB/MicroEnsm): {speedup:.1f}x")
+    print("Goal: MicroEnsm ACC > OneStep ACC, while maintaining high speed.")
     print("============================================================")
 
 if __name__ == "__main__":
