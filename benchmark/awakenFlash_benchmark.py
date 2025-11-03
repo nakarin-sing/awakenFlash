@@ -5,7 +5,8 @@ FINAL CI-SAFE VERSION
 - VotingClassifier bug fix (voting='soft')
 - Memory + time profiling
 - Poly2Wrapper C=0.1
-- FIX: Ensure full DataFrame output in log
+- FIX: Ensured full DataFrame output in log
+- FIX: Added explicit _estimator_type for Pipelines to bypass CI bug
 """
 
 import numpy as np
@@ -26,7 +27,7 @@ except ModuleNotFoundError:
     HAVE_MPL = False
 
 # ----------------------
-# sklearn + xgboost (ส่วนเดิม)
+# sklearn + xgboost
 # ----------------------
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -42,7 +43,7 @@ warnings.filterwarnings('ignore')
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # ----------------------
-# Wrappers (ส่วนเดิม)
+# Wrappers
 # ----------------------
 class Poly2Wrapper(BaseEstimator, ClassifierMixin):
     def __init__(self, degree=2, C=0.1):
@@ -80,7 +81,7 @@ class RFFWrapper(BaseEstimator, ClassifierMixin):
         return "classifier"
 
 # ----------------------
-# Dataset (ส่วนเดิม)
+# Dataset
 # ----------------------
 dataset = load_breast_cancer()
 X, y = dataset.data, dataset.target
@@ -89,7 +90,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # ----------------------
-# Pipelines & Ensemble (ส่วน voting='soft' ที่แก้ไขแล้ว)
+# Pipelines & Ensemble
 # ----------------------
 pipe_xgb = Pipeline([
     ('scaler', StandardScaler()),
@@ -105,13 +106,20 @@ pipe_rff = Pipeline([
     ('rff', RFFWrapper(gamma='scale', n_components=100, C=1.0))
 ])
 
+# ----------------------------------------------------
+# 💡 FIX 1: เพิ่ม property '_estimator_type' ให้กับ Pipeline เพื่อ Bypass Error Type Check
+# ----------------------------------------------------
+pipe_xgb._estimator_type = 'classifier'
+pipe_poly2._estimator_type = 'classifier'
+pipe_rff._estimator_type = 'classifier'
+
 ensemble = VotingClassifier(
     estimators=[
         ('XGBoost', pipe_xgb),
         ('Poly2', pipe_poly2),
         ('RFF', pipe_rff)
     ],
-    voting='soft' # ใช้ soft voting เพื่อแก้ปัญหา Ensemble
+    voting='soft'  # FIX 2: ใช้ soft voting เพื่อให้มันใช้ predict_proba
 )
 
 models = {"XGBoost": pipe_xgb, "Poly2": pipe_poly2, "RFF": pipe_rff, "Ensemble": ensemble}
@@ -126,12 +134,17 @@ for name, model in models.items():
     try:
         # CV safe: skip for Ensemble
         if name != "Ensemble":
+            # Start memory & time tracking (for CV)
+            tracemalloc.start()
             cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
             cv_mean_acc = cv_scores.mean()
+            mem_current, mem_peak_cv = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
         else:
             cv_mean_acc = np.nan
+            mem_peak_cv = 0 # ไม่ได้วัด CV Peak Memory สำหรับ Ensemble
 
-        # Start memory & time tracking
+        # Start memory & time tracking (for fit)
         tracemalloc.start()
         t0 = time.time()
         model.fit(X_train, y_train)
@@ -163,7 +176,7 @@ for name, model in models.items():
 df = pd.DataFrame(results)
 
 # ----------------------
-# FIX: ส่วนที่เพิ่มเพื่อแสดงผลลัพธ์ใน Log อย่างสมบูรณ์
+# FIX 3: ส่วนที่เพิ่มเพื่อแสดงผลลัพธ์ใน Log อย่างสมบูรณ์
 # ----------------------
 # ตั้งค่า Pandas ให้แสดงผลลัพธ์ทั้งหมดโดยไม่ตัดทอน
 pd.set_option('display.max_rows', None)
@@ -174,8 +187,9 @@ pd.set_option('display.width', 1000)
 print("\n--- Benchmark Results (Full) ---\n")
 print(df.to_string())
 df.to_csv("benchmark_results.csv", index=False)
+
 # ----------------------
-# Optional plot (ส่วนเดิม)
+# Optional plot
 # ----------------------
 if HAVE_MPL:
     plt.figure(figsize=(8,5))
