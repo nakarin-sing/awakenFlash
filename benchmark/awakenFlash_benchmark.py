@@ -13,15 +13,17 @@ from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.base import BaseEstimator, ClassifierMixin # <<< IMPORTED CLASSES
 import tracemalloc
 import psutil
 import os
+import gc # For explicit garbage collection
 
 # ========================================
 # ENHANCED ONESTEP WITH FAIR PREPROCESSING
 # ========================================
 
-class OneStepOptimized:
+class OneStepOptimized(BaseEstimator, ClassifierMixin): # <<< INHERITED CLASSES
     """
     Enhanced OneStep with:
     1. Same preprocessing available to XGBoost
@@ -30,6 +32,7 @@ class OneStepOptimized:
     4. Memory-efficient implementation
     """
     def __init__(self, C=1e-3, use_poly=True, poly_degree=2):
+        # All parameters must be stored here for get_params/set_params to work
         self.C = C
         self.use_poly = use_poly
         self.poly_degree = poly_degree
@@ -44,7 +47,8 @@ class OneStepOptimized:
         # Add polynomial features if enabled (same as available to XGBoost)
         if self.use_poly:
             poly = PolynomialFeatures(degree=self.poly_degree, include_bias=True)
-            X_features = poly.fit_transform(X).astype(np.float32)
+            self._poly = poly.fit(X) # Store the fitted poly object
+            X_features = self._poly.transform(X).astype(np.float32)
         else:
             # Add bias term
             X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
@@ -64,9 +68,12 @@ class OneStepOptimized:
         I = np.eye(XTX.shape[0], dtype=np.float32)
         self.W = np.linalg.solve(XTX + lambda_adaptive * I, XTY)
         
-        # Store polynomial transformer for prediction
-        if self.use_poly:
-            self.poly = poly
+        # Explicit garbage collection after matrix solve to minimize memory peak
+        del XTX, XTY, I 
+        gc.collect()
+        
+        # Return self for Scikit-learn compatibility
+        return self
             
     def predict(self, X):
         """
@@ -76,7 +83,7 @@ class OneStepOptimized:
         
         # Apply same feature transformation
         if self.use_poly:
-            X_features = self.poly.transform(X).astype(np.float32)
+            X_features = self._poly.transform(X).astype(np.float32) # Use stored poly object
         else:
             X_features = np.hstack([np.ones((X.shape[0], 1), dtype=np.float32), X])
         
@@ -140,6 +147,8 @@ def benchmark_fair():
         print("\n[1/2] Training XGBoost with GridSearch...")
         
         # Add polynomial features for XGBoost too (FAIR!)
+        # Note: XGBoost is tree-based, so poly features usually give diminishing returns, 
+        # but we add them for a truly fair comparison of the feature space.
         poly_xgb = PolynomialFeatures(degree=2, include_bias=False)
         X_train_poly_xgb = poly_xgb.fit_transform(X_train_scaled)
         X_test_poly_xgb = poly_xgb.transform(X_test_scaled)
@@ -227,6 +236,8 @@ def benchmark_fair():
             scoring='accuracy',
             n_jobs=1  # OneStep is single-threaded by design
         )
+        # Note: OneStepOptimized handles PolynomialFeatures inside the fit method,
+        # so we pass only the scaled original features X_train_scaled.
         onestep_grid.fit(X_train_scaled, y_train)
         t_onestep = time.time() - t0
         
@@ -267,36 +278,44 @@ def benchmark_fair():
         
         # Accuracy comparison
         acc_diff = acc_onestep - acc_xgb
-        acc_winner = "OneStep" if acc_diff > 0 else "XGBoost" if acc_diff < 0 else "TIE"
+        acc_winner = "OneStep" if acc_diff > 1e-4 else "XGBoost" if acc_diff < -1e-4 else "TIE"
         print(f"Accuracy:    OneStep {acc_onestep:.4f} vs XGBoost {acc_xgb:.4f}")
         print(f"             Difference: {acc_diff:+.4f} → Winner: {acc_winner}")
         
         # F1 comparison
         f1_diff = f1_onestep - f1_xgb
-        f1_winner = "OneStep" if f1_diff > 0 else "XGBoost" if f1_diff < 0 else "TIE"
+        f1_winner = "OneStep" if f1_diff > 1e-4 else "XGBoost" if f1_diff < -1e-4 else "TIE"
         print(f"F1 Score:    OneStep {f1_onestep:.4f} vs XGBoost {f1_xgb:.4f}")
         print(f"             Difference: {f1_diff:+.4f} → Winner: {f1_winner}")
         
         # Speed comparison
         speedup = t_xgb / t_onestep if t_onestep > 0 else 0
-        speed_winner = "OneStep" if speedup > 1 else "XGBoost"
+        speed_winner = "OneStep" if speedup > 1.05 else "XGBoost"
         print(f"Speed:       OneStep {t_onestep:.4f}s vs XGBoost {t_xgb:.4f}s")
         print(f"             Speedup: {speedup:.2f}x → Winner: {speed_winner}")
         
-        # Memory comparison
-        mem_ratio = mem_used_xgb / mem_used_onestep if mem_used_onestep > 0 else 0
-        mem_winner = "OneStep" if mem_ratio > 1 else "XGBoost"
-        print(f"Memory:      OneStep {mem_used_onestep:.2f}MB vs XGBoost {mem_used_xgb:.2f}MB")
+        # Memory comparison (Peak Memory is the fairest measure)
+        mem_ratio = results['XGBoost']['peak_memory_mb'] / results['OneStep']['peak_memory_mb'] if results['OneStep']['peak_memory_mb'] > 0 else 0
+        mem_winner = "OneStep" if mem_ratio > 1.05 else "XGBoost"
+        print(f"Memory (Peak): OneStep {results['OneStep']['peak_memory_mb']:.2f}MB vs XGBoost {results['XGBoost']['peak_memory_mb']:.2f}MB")
         print(f"             Ratio: {mem_ratio:.2f}x less → Winner: {mem_winner}")
         
         # Overall winner
-        wins = {
-            'OneStep': sum([acc_diff >= 0, f1_diff >= 0, speedup > 1, mem_ratio > 1]),
-            'XGBoost': sum([acc_diff <= 0, f1_diff <= 0, speedup <= 1, mem_ratio <= 1])
-        }
-        overall_winner = max(wins, key=wins.get)
+        wins_onestep = 0
+        if acc_diff > 1e-4: wins_onestep += 1
+        if f1_diff > 1e-4: wins_onestep += 1
+        if speedup > 1.05: wins_onestep += 1
+        if mem_ratio > 1.05: wins_onestep += 1
+        
+        wins_xgboost = 0
+        if acc_diff < -1e-4: wins_xgboost += 1
+        if f1_diff < -1e-4: wins_xgboost += 1
+        if speedup < 1/1.05: wins_xgboost += 1
+        if mem_ratio < 1/1.05: wins_xgboost += 1
+        
+        overall_winner = "OneStep" if wins_onestep > wins_xgboost else "XGBoost" if wins_xgboost > wins_onestep else "TIE"
         print(f"\n{'*'*80}")
-        print(f"OVERALL WINNER: {overall_winner} ({wins[overall_winner]}/4 metrics)")
+        print(f"OVERALL WINNER: {overall_winner} (OneStep Wins: {wins_onestep}/4, XGBoost Wins: {wins_xgboost}/4)")
         print(f"{'*'*80}")
         
         all_results.append({
@@ -318,28 +337,25 @@ def benchmark_fair():
     
     print(f"Dataset Wins: OneStep {onestep_wins} vs XGBoost {xgb_wins}")
     print(f"\nDetailed Results:")
-    print(f"{'Dataset':<15} {'Accuracy':<20} {'Speed':<20} {'Memory':<20}")
+    print(f"{'Dataset':<15} {'ACC (O vs X)':<18} {'Speedup (X/O)':<18} {'Memory Ratio (X/O)':<20}")
     print(f"{'-'*80}")
     
     for r in all_results:
         acc_comp = f"{r['onestep']['accuracy']:.4f} vs {r['xgboost']['accuracy']:.4f}"
         speedup = r['xgboost']['time'] / r['onestep']['time']
-        speed_comp = f"{speedup:.1f}x faster"
-        mem_ratio = r['xgboost']['memory_mb'] / r['onestep']['memory_mb']
-        mem_comp = f"{mem_ratio:.1f}x less"
+        speed_comp = f"{speedup:.2f}x"
+        mem_ratio = r['xgboost']['peak_memory_mb'] / r['onestep']['peak_memory_mb']
+        mem_comp = f"{mem_ratio:.2f}x"
         
-        print(f"{r['dataset']:<15} {acc_comp:<20} {speed_comp:<20} {mem_comp:<20}")
+        print(f"{r['dataset']:<15} {acc_comp:<18} {speed_comp:<18} {mem_comp:<20}")
     
     print(f"\n{'='*80}")
     if onestep_wins > xgb_wins:
         print("🏆 CONCLUSION: OneStep WINS with fair comparison!")
-        print("   ✓ Same preprocessing for both models")
-        print("   ✓ GridSearch hyperparameter tuning for both")
-        print("   ✓ Same polynomial features available")
-        print("   ✓ Measured: Accuracy, F1, Speed, Memory")
-    else:
+    elif xgb_wins > onestep_wins:
         print("🏆 CONCLUSION: XGBoost WINS in this comparison")
-        print("   But OneStep still offers advantages in speed and memory!")
+    else:
+        print("🤝 CONCLUSION: TIE across datasets")
     print(f"{'='*80}")
 
 if __name__ == "__main__":
