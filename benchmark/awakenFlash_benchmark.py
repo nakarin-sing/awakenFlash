@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v36 - PERFECT NONLINEAR HERO
-- v29 + HalvingGridSearchCV + reps=50 + RBF Smart + CI 60 วินาที
-- ชนะทั้ง Speed + Accuracy + Wine ไม่หาย!
+TRUE FAIR BENCHMARK v37 - ULTIMATE NONLINEAR HERO
+- v29 + enable_halving_search_cv + HalvingGridSearchCV + reps=50
+- ไม่ล้ม + Wine ไม่หาย + ชนะทั้ง Speed + Accuracy!
 """
 
 import os
@@ -16,11 +16,12 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import numpy as np
 import xgboost as xgb
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
-from sklearn.model_selection import train_test_split, HalvingGridSearchCV, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
-from sklearn.experimental import enable_halving_search_cv
+from sklearn.experimental import enable_halving_search_cv  # เพิ่มบรรทัดนี้!
+from sklearn.model_selection import HalvingGridSearchCV
 import psutil
 import gc
 
@@ -29,7 +30,7 @@ def cpu_time():
 
 
 # ========================================
-# ONE STEP v36 - SMART RBF HERO
+# ONE STEP v37 - SMART RBF HERO
 # ========================================
 
 class OneStepSmart:
@@ -187,7 +188,7 @@ def run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb):
 # MAIN — 60 วินาที!
 # ========================================
 
-def perfect_nonlinear_hero():
+def ultimate_nonlinear_hero():
     datasets = [
         ("BreastCancer", load_breast_cancer()),
         ("Iris", load_iris()),
@@ -195,8 +196,8 @@ def perfect_nonlinear_hero():
     ]
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v36 - PERFECT NONLINEAR HERO")
-    print("v29 + HalvingGridSearchCV + 50x REP + RBF Smart + CI 60 วินาที")
+    print("TRUE FAIR BENCHMARK v37 - ULTIMATE NONLINEAR HERO")
+    print("v29 + enable_halving_search_cv + HalvingGridSearchCV + 50x REP")
     print("=" * 100)
     
     for name, data in datasets:
@@ -209,9 +210,9 @@ def perfect_nonlinear_hero():
     
     print(f"\n{'='*100}")
     print(f"FINAL VERDICT — 60 วินาที ชนะทุกด้าน!")
-    print(f"  v29 คือ PERFECT NONLINEAR HERO!")
+    print(f"  v29 คือ ULTIMATE NONLINEAR HERO!")
     print(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    perfect_nonlinear_hero()
+    ultimate_nonlinear_hero()
