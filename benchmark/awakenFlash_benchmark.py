@@ -1,138 +1,132 @@
-# -*- coding: utf-8 -*-
-"""
-AWAKEN vΩ.17 — REAL STREAMING BENCHMARK (Covertype 500MB)
-==========================================================
-- Streaming benchmark (chunked reading)
-- Compare: SGD / OneStepRLS / XGBoost
-- Auto-download dataset, low-RAM friendly
-- Saves result as CSV under benchmark_results/
-"""
-
 import os, time, gzip, io, requests
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier
-from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score
 
-# ---------------------------
-# Simple Online RLS
-# ---------------------------
+# ==============================
+# ✅ CONFIG
+# ==============================
+DATA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
+RESULT_DIR = "benchmark_results"
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+# ==============================
+# ✅ STREAMING DATA LOADER
+# ==============================
+def stream_covtype(chunksize=50000):
+    print(f"🔗 Loading dataset streaming from: {DATA_URL}")
+    with requests.get(DATA_URL, stream=True) as r:
+        r.raise_for_status()
+        decompressed = gzip.GzipFile(fileobj=io.BytesIO(r.content))
+        df_iter = pd.read_csv(decompressed, header=None, chunksize=chunksize)
+        for chunk in df_iter:
+            X = chunk.iloc[:, :-1].values
+            y = chunk.iloc[:, -1].values
+            yield X, y
+
+# ==============================
+# ✅ RLS (Recursive Least Squares)
+# ==============================
 class OneStepRLS:
-    def __init__(self, n_features, lam=1e-2):
+    def __init__(self, n_features, lam=1.0):
         self.w = np.zeros((n_features, 1))
         self.P = np.eye(n_features) / lam
 
     def partial_fit(self, X, y):
-        for i in range(X.shape[0]):
-            xi = X[i, :].reshape(-1, 1)
-            yi = y[i]
-            Pi = self.P @ xi
-            k = Pi / (1.0 + xi.T @ Pi)
-            err = yi - float(xi.T @ self.w)
-            self.w += k * err
-            self.P -= k @ xi.T @ self.P
-        return self
+        for xi, yi in zip(X, y):
+            xi = xi.reshape(-1, 1)
+            # ✅ แก้ warning จาก NumPy
+            err = float(yi - (xi.T @ self.w).item())
+            g = self.P @ xi / (1.0 + (xi.T @ self.P @ xi).item())
+            self.w += g * err
+            self.P -= g @ xi.T @ self.P
 
     def predict(self, X):
-        return np.sign(X @ self.w).ravel()
+        return np.sign(X @ self.w).flatten()
 
-# ---------------------------
-# Streamed dataset loader
-# ---------------------------
-URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-CHUNKSIZE = 10000  # tune for GitHub runner RAM
-
-def stream_covtype():
-    print(f"🔗 Loading dataset streaming from: {URL}")
-    with requests.get(URL, stream=True) as r:
-        r.raise_for_status()
-        buf = io.BytesIO(r.content)
-        with gzip.open(buf, "rt") as f:
-            cols = list(range(54)) + ["target"]
-            for chunk in pd.read_csv(f, names=cols, chunksize=CHUNKSIZE):
-                X = chunk.iloc[:, :-1].to_numpy(dtype=np.float32)
-                y = chunk["target"].to_numpy(dtype=np.int32)
-                yield X, y
-
-# ---------------------------
-# Main benchmark
-# ---------------------------
+# ==============================
+# ✅ MAIN BENCHMARK
+# ==============================
 def benchmark():
     results = []
+    chunk_id = 0
+
     scaler = StandardScaler()
-    sgd = SGDClassifier(loss="log_loss", max_iter=1, learning_rate="optimal", tol=None)
-    rls = OneStepRLS(n_features=54)
-    xgb_X, xgb_y = [], []
+    sgd = SGDClassifier(max_iter=5)
+    xgb = XGBClassifier(
+        objective="multi:softmax", num_class=8, eval_metric="mlogloss", use_label_encoder=False
+    )
+    rls = None
 
-    start_time = time.time()
-    for i, (X, y) in enumerate(stream_covtype(), 1):
-        print(f"\n===== Processing Chunk {i:02d} =====")
-
-        # Standardize
-        X = scaler.partial_fit(X).transform(X)
-
-        # SGD online
-        t0 = time.time()
-        sgd.partial_fit(X, y, classes=np.arange(1, 8))
-        acc_sgd = sgd.score(X, y)
-        t_sgd = time.time() - t0
-        print(f"SGD: acc={acc_sgd:.3f}, time={t_sgd:.3f}s")
-
-        # RLS online
-        t0 = time.time()
-        y_rls = (y == 1).astype(np.float32)  # binary surrogate for speed
-        rls.partial_fit(X, y_rls)
-        preds = (rls.predict(X) > 0).astype(int)
-        acc_rls = np.mean(preds == y_rls)
-        t_rls = time.time() - t0
-        print(f"RLS: acc={acc_rls:.3f}, time={t_rls:.3f}s")
-
-        # Collect for XGBoost retrain
-        xgb_X.append(X)
-        xgb_y.append(y - 1)  # shift labels to 0–6
-        X_all = np.vstack(xgb_X)
-        y_all = np.hstack(xgb_y)
-
-        # XGBoost retrain (mini-batch style)
-        t0 = time.time()
-        model = xgb.XGBClassifier(
-            n_estimators=50, max_depth=6, learning_rate=0.1,
-            subsample=0.8, colsample_bytree=0.8,
-            tree_method="hist", eval_metric="mlogloss",
-            num_class=7, verbosity=0
-        )
-        model.fit(X_all, y_all)
-        preds = model.predict(X[:2000])
-        acc_xgb = accuracy_score(y[:2000], preds + 1)
-        t_xgb = time.time() - t0
-        print(f"XGB: acc={acc_xgb:.3f}, time={t_xgb:.3f}s")
-
-        results.append({
-            "chunk": i,
-            "acc_sgd": acc_sgd,
-            "acc_rls": acc_rls,
-            "acc_xgb": acc_xgb,
-            "time_sgd": t_sgd,
-            "time_rls": t_rls,
-            "time_xgb": t_xgb
-        })
-
-        # Limit for CI runner
-        if i >= 5:
-            break
-
-    total_time = time.time() - start_time
-    df = pd.DataFrame(results)
-    os.makedirs("benchmark_results", exist_ok=True)
-    out_file = "benchmark_results/streaming_results.csv"
-    df.to_csv(out_file, index=False)
-    print(f"\n✅ Benchmark complete in {total_time:.1f}s — saved to {out_file}")
-
-# ---------------------------
-# Entry
-# ---------------------------
-if __name__ == "__main__":
     print("🚀 Starting benchmark...")
+
+    for X, y in stream_covtype(chunksize=50000):
+        chunk_id += 1
+        print(f"\n===== Processing Chunk {chunk_id:02d} =====")
+
+        X = scaler.fit_transform(X)
+        y = y - y.min()  # normalize labels to start from 0
+
+        if rls is None:
+            rls = OneStepRLS(n_features=X.shape[1])
+
+        chunk_result = {"chunk": chunk_id}
+
+        # --- SGD ---
+        t0 = time.time()
+        sgd.partial_fit(X, y, classes=np.unique(y))
+        pred_sgd = sgd.predict(X)
+        acc_sgd = accuracy_score(y, pred_sgd)
+        chunk_result["SGD_acc"] = acc_sgd
+        chunk_result["SGD_time"] = time.time() - t0
+        print(f"SGD: acc={acc_sgd:.3f}, time={chunk_result['SGD_time']:.3f}s")
+
+        # --- RLS ---
+        t0 = time.time()
+        rls.partial_fit(X, y)
+        pred_rls = np.round((X @ rls.w).flatten())
+        acc_rls = np.mean(pred_rls == y)
+        chunk_result["RLS_acc"] = acc_rls
+        chunk_result["RLS_time"] = time.time() - t0
+        print(f"RLS: acc={acc_rls:.3f}, time={chunk_result['RLS_time']:.3f}s")
+
+        # --- XGBoost ---
+        t0 = time.time()
+        xgb.fit(X, y)
+        pred_xgb = xgb.predict(X)
+        acc_xgb = accuracy_score(y, pred_xgb)
+        chunk_result["XGB_acc"] = acc_xgb
+        chunk_result["XGB_time"] = time.time() - t0
+        print(f"XGB: acc={acc_xgb:.3f}, time={chunk_result['XGB_time']:.3f}s")
+
+        results.append(chunk_result)
+
+    # ==============================
+    # ✅ สรุปผลและบันทึก CSV
+    # ==============================
+    df = pd.DataFrame(results)
+    df.to_csv(os.path.join(RESULT_DIR, "raw_results.csv"), index=False)
+
+    summary = pd.DataFrame({
+        "Model": ["SGD", "RLS", "XGB"],
+        "Avg_Accuracy": [
+            df["SGD_acc"].mean(),
+            df["RLS_acc"].mean(),
+            df["XGB_acc"].mean(),
+        ],
+        "Avg_Time(s)": [
+            df["SGD_time"].mean(),
+            df["RLS_time"].mean(),
+            df["XGB_time"].mean(),
+        ],
+    })
+
+    summary.to_csv(os.path.join(RESULT_DIR, "summary.csv"), index=False)
+    print("\n📊 Benchmark Summary:\n", summary)
+
+
+if __name__ == "__main__":
     benchmark()
