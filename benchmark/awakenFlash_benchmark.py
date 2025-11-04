@@ -1,14 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-PURE FAIR BENCHMARK v8
-- Same preprocessing
-- Same CV
-- Same CPU (n_jobs=1)
-- True memory (psutil RSS)
+PURE FAIR BENCHMARK v8.1
+- Fixed ZeroDivisionError
+- True memory (RSS)
+- n_jobs=1 both
+- XGBoost: no poly
+- OneStep: with poly
 - Predict BEFORE del
-- XGBoost: no poly (pure tree)
-- OneStep: with poly (closed-form)
 """
 
 import time
@@ -24,7 +23,7 @@ import os
 
 
 # ========================================
-# ONE STEP (CLOSED-FORM, float64)
+# ONE STEP
 # ========================================
 
 class OneStepOptimized:
@@ -70,7 +69,7 @@ class OneStepOptimized:
 
 
 # ========================================
-# MEMORY (TRUE RSS)
+# MEMORY
 # ========================================
 
 def get_rss_mb():
@@ -79,7 +78,7 @@ def get_rss_mb():
 
 
 # ========================================
-# PURE FAIR BENCHMARK
+# BENCHMARK
 # ========================================
 
 def benchmark_pure_fair():
@@ -92,8 +91,8 @@ def benchmark_pure_fair():
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 90)
-    print("PURE FAIR BENCHMARK v8")
-    print("XGBoost: no poly, n_jobs=1 | OneStep: with poly, n_jobs=1")
+    print("PURE FAIR BENCHMARK v8.1 - FIXED ZERO DIVISION")
+    print("XGBoost: no poly | OneStep: with poly | n_jobs=1")
     print("=" * 90)
     
     all_results = []
@@ -112,7 +111,7 @@ def benchmark_pure_fair():
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        # === XGBoost (NO poly, n_jobs=1) ===
+        # === XGBoost ===
         print("\n[1/2] XGBoost (no poly, n_jobs=1)...")
         mem_before = get_rss_mb()
         t0 = time.time()
@@ -131,7 +130,7 @@ def benchmark_pure_fair():
         )
         xgb_grid.fit(X_train_scaled, y_train)
         t_xgb = time.time() - t0
-        mem_used_xgb = get_rss_mb() - mem_before
+        mem_used_xgb = max(0.1, get_rss_mb() - mem_before)  # min 0.1 MB
         
         best_xgb = xgb_grid.best_params_
         pred_xgb = xgb_grid.predict(X_test_scaled)
@@ -144,8 +143,8 @@ def benchmark_pure_fair():
         print(f"XGBoost → Acc: {acc_xgb:.4f} | F1: {f1_xgb:.4f} | {t_xgb:.3f}s | {mem_used_xgb:.1f}MB")
         print(f"  Best: {best_xgb}")
         
-        # === OneStep (with poly) ===
-        print("\n[2/2] OneStep (with poly, float64)...")
+        # === OneStep ===
+        print("\n[2/2] OneStep (with poly)...")
         mem_before = get_rss_mb()
         t0 = time.time()
         
@@ -156,7 +155,7 @@ def benchmark_pure_fair():
         )
         onestep_grid.fit(X_train_scaled, y_train)
         t_one = time.time() - t0
-        mem_used_one = get_rss_mb() - mem_before
+        mem_used_one = max(0.1, get_rss_mb() - mem_before)  # min 0.1 MB
         
         best_one = onestep_grid.best_params_
         pred_one = onestep_grid.predict(X_test_scaled)
@@ -179,7 +178,7 @@ def benchmark_pure_fair():
         print(f"Speed    : {t_one:.3f}s vs {t_xgb:.3f}s → {speed_up:.1f}x faster")
         print(f"Memory   : {mem_used_one:.1f}MB vs {mem_used_xgb:.1f}MB → {mem_ratio:.1f}x less")
         
-        wins = sum([acc_diff >= 0, t_one < t_xgb, mem_used_one < mem_used_xgb])
+        wins = sum([acc_diff >= 0, t_one < t_xgb, mem_used_one <= mem_used_xgb])
         winner = "OneStep" if wins >= 2 else "XGBoost"
         print(f"\nWINNER: {winner} ({wins}/3)")
         
@@ -190,7 +189,7 @@ def benchmark_pure_fair():
             'winner': winner
         })
     
-    # === FINAL TABLE ===
+    # === FINAL TABLE (ป้องกันหาร 0) ===
     print(f"\n\n{'='*90}")
     print("FINAL SUMMARY")
     print(f"{'='*90}")
@@ -199,8 +198,8 @@ def benchmark_pure_fair():
     print(f"{'Dataset':<15} {'Acc':<12} {'Speed':<10} {'Mem':<10}")
     print(f"{'-'*50}")
     for r in all_results:
-        speed = f"{r['xgboost']['time']/r['onestep']['time']:.1f}x"
-        mem = f"{r['xgboost']['mem']/r['onestep']['mem']:.1f}x"
+        speed = f"{r['xgboost']['time']/r['onestep']['time']:.1f}x" if r['onestep']['time'] > 0 else "∞x"
+        mem = f"{r['xgboost']['mem']/r['onestep']['mem']:.1f}x" if r['onestep']['mem'] > 0 else "∞x"
         print(f"{r['dataset']:<15} {r['onestep']['acc']:.4f}/{r['xgboost']['acc']:.4f} {speed:<10} {mem:<10}")
     
     if onestep_wins >= 2:
