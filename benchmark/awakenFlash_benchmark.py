@@ -1,58 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py — Stable Streaming Benchmark
-=====================================================
-✅ แก้บั๊ก partial_fit class mismatch
-✅ ป้องกัน overflow / NaN ใน RLS++
-✅ รองรับ NumPy >= 1.25
-✅ ใช้ dataset streaming จริงจาก UCI
+awakenFlash_benchmark.py — Stable RLS++ v3
+===========================================
+✅ Overflow-safe adaptive RLS
+✅ Auto regularization & clipping
+✅ Summary table at end of run
 """
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-import psutil, time, urllib.request, gzip, io
+import time, urllib.request, gzip, io
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 
 
-# ========================
-# 🔧 RLS++ Online Learner
-# ========================
+# ====================================
+# 🧠 RLS++ v3 — Adaptive Gain Control
+# ====================================
 
 class RLSPlus:
-    def __init__(self, n_features, lam=0.99, delta=1.0):
+    def __init__(self, n_features, lam=0.99, delta=1.0, gain_cap=1.0):
         self.lam = lam
-        self.w = np.zeros((n_features, 1))
-        self.P = np.eye(n_features) / delta
+        self.gain_cap = gain_cap
+        self.w = np.zeros((n_features, 1), dtype=np.float64)
+        self.P = np.eye(n_features, dtype=np.float64) / delta
 
     def partial_fit(self, X, y):
         for i in range(X.shape[0]):
             xi = X[i, :].reshape(-1, 1)
             yi = y[i]
 
-            # --- Stable update ---
-            try:
-                pred = (xi.T @ self.w).item()
-            except Exception:
-                pred = float(np.dot(xi.ravel(), self.w.ravel()))
-
+            # predict
+            pred = (xi.T @ self.w).item()
             err = yi - pred
+
             denom = self.lam + xi.T @ self.P @ xi
             if denom <= 0 or np.isnan(denom):
                 denom = self.lam + 1e-8
 
             k = (self.P @ xi) / denom
-            self.w += k * err
+            k = np.clip(k, -self.gain_cap, self.gain_cap)
 
-            # Stable update for P
+            # weight update
+            dw = k * err
+            if np.any(np.isnan(dw)) or np.any(np.abs(dw) > 1e3):
+                dw = np.zeros_like(dw)
+            self.w += dw
+
+            # covariance update
             self.P = (self.P - k @ xi.T @ self.P) / self.lam
-            np.clip(self.P, -1e6, 1e6, out=self.P)
+            np.clip(self.P, -1e3, 1e3, out=self.P)
+
             if np.any(np.isnan(self.P)):
-                self.P = np.eye(self.P.shape[0]) / 1.0  # reset safeguard
+                self.P = np.eye(self.P.shape[0]) / 1.0  # reset covariance
 
     def predict(self, X):
         y_pred = X @ self.w
@@ -71,8 +75,7 @@ def load_covtype_stream(chunk_size=20000, max_chunks=5):
         data = pd.read_csv(io.BytesIO(gzip.decompress(f.read())), header=None)
 
     X = data.iloc[:, :-1].values.astype(np.float32)
-    y = (data.iloc[:, -1].values == 2).astype(int)  # binary simplify
-
+    y = (data.iloc[:, -1].values == 2).astype(int)
     X, y = shuffle(X, y, random_state=42)
 
     for i in range(0, min(len(X), chunk_size * max_chunks), chunk_size):
@@ -87,13 +90,11 @@ def benchmark():
     print("🚀 Starting benchmark...\n")
     stream = load_covtype_stream()
 
-    # Prepare models
     sgd = SGDClassifier(loss="log_loss", max_iter=1, learning_rate="optimal", tol=None)
     rls = None
     xgb_model = xgb.XGBClassifier(n_estimators=50, max_depth=4, learning_rate=0.3, tree_method="hist", verbosity=0)
-
     scaler = StandardScaler()
-    all_classes = np.array([0, 1])  # fix class list for partial_fit
+    all_classes = np.array([0, 1])
 
     results = []
 
@@ -107,25 +108,22 @@ def benchmark():
         else:
             X = scaler.transform(X)
 
-        # --- SGD ---
+        # SGD
         t0 = time.time()
         sgd.partial_fit(X, y, classes=all_classes)
-        pred_sgd = sgd.predict(X)
-        acc_sgd = accuracy_score(y, pred_sgd)
+        acc_sgd = accuracy_score(y, sgd.predict(X))
         t1 = time.time() - t0
 
-        # --- RLS++ ---
+        # RLS++
         t0 = time.time()
         rls.partial_fit(X, y)
-        pred_rls = rls.predict(X)
-        acc_rls = accuracy_score(y, pred_rls)
+        acc_rls = accuracy_score(y, rls.predict(X))
         t2 = time.time() - t0
 
-        # --- XGBoost ---
+        # XGB
         t0 = time.time()
         xgb_model.fit(X, y)
-        pred_xgb = xgb_model.predict(X)
-        acc_xgb = accuracy_score(y, pred_xgb)
+        acc_xgb = accuracy_score(y, xgb_model.predict(X))
         t3 = time.time() - t0
 
         print(f"SGD: acc={acc_sgd:.3f}, time={t1:.3f}s")
@@ -136,7 +134,19 @@ def benchmark():
 
     df = pd.DataFrame(results, columns=["Chunk", "SGD_acc", "RLS_acc", "XGB_acc", "SGD_time", "RLS_time", "XGB_time"])
     df.to_csv("benchmark_results/awakenFlash_results.csv", index=False)
-    print("✅ Benchmark complete → saved to benchmark_results/awakenFlash_results.csv")
+
+    print("\n✅ Benchmark complete → saved to benchmark_results/awakenFlash_results.csv")
+
+    # Summary
+    avg = df.mean(numeric_only=True)
+    print("\n📊 Average Performance Summary:")
+    print(f"  SGD   — acc={avg['SGD_acc']:.3f}, time={avg['SGD_time']:.3f}s")
+    print(f"  RLS++ — acc={avg['RLS_acc']:.3f}, time={avg['RLS_time']:.3f}s")
+    print(f"  XGB   — acc={avg['XGB_acc']:.3f}, time={avg['XGB_time']:.3f}s")
+
+    best = max(avg['SGD_acc'], avg['RLS_acc'], avg['XGB_acc'])
+    winner = ["SGD", "RLS++", "XGB"][np.argmax([avg['SGD_acc'], avg['RLS_acc'], avg['XGB_acc']])]
+    print(f"\n🏁 Winner: {winner} (mean acc={best:.3f})")
 
 
 if __name__ == "__main__":
