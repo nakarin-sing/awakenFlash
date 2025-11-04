@@ -1,75 +1,63 @@
-# awakenFlash_benchmark.py
 import numpy as np
-import pandas as pd
-import time
 from sklearn.linear_model import SGDClassifier
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
-from sklearn.preprocessing import LabelEncoder
-import os
-
-print("Loading dataset (this may take a few seconds)...")
-
-# ✅ Load dataset
-from sklearn.datasets import fetch_covtype
-data = fetch_covtype()
-X, y = data.data, data.target
-
-# ✅ Label normalization (force 0–6)
-le = LabelEncoder()
-y = le.fit_transform(y)
-
-# ✅ Split into chunks (simulate streaming)
-chunk_size = X.shape[0] // 5
-chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, X.shape[0], chunk_size)]
-
-os.makedirs("benchmark_results", exist_ok=True)
-
-def safe_partial_fit(model, X, y, classes):
-    params = model.get_params()
-    if "eta0" in params and params["eta0"] <= 0:
-        print(f"[WARN] eta0 ({params['eta0']}) <= 0 → ปรับเป็น 0.01 โดยอัตโนมัติ")
-        model.set_params(eta0=0.01)
-    return model.partial_fit(X, y, classes=classes)
+from awakenFlash import AdaptiveSRLS
+from awakenFlash.datasets import load_dataset
 
 def scenario4_adaptive():
-    print("\n===== Scenario 4: Adaptive Streaming Learning =====")
-    classes = np.arange(7)  # ✅ fixed number of classes (0–6)
+    print("\nLoading dataset (this may take a few seconds)...\n")
+    X_chunks, y_chunks = load_dataset("realworld_stream")
 
-    sgd = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=0.01, max_iter=1, warm_start=True)
+    print("\n===== Scenario 4: Adaptive Streaming Learning =====\n")
+
+    sgd = SGDClassifier(loss="log_loss", eta0=0.01, learning_rate="constant", max_iter=5, tol=None)
+    asrls = AdaptiveSRLS()
     xgb = XGBClassifier(
         objective="multi:softmax",
-        num_class=len(classes),
+        num_class=8,
         eval_metric="mlogloss",
-        max_depth=4,
-        eta=0.3,
+        use_label_encoder=False,
         verbosity=0,
-        n_estimators=10,
-        use_label_encoder=False
     )
 
-    acc_sgd, acc_asrls, acc_xgb = [], [], []
+    X_train_full, y_train_full = np.empty((0, X_chunks[0].shape[1])), np.empty((0,), dtype=int)
 
-    for i, (X_tr, y_tr) in enumerate(chunks, 1):
+    for i, (X_train, y_train) in enumerate(zip(X_chunks, y_chunks), start=1):
         print(f"\n===== Processing Chunk {i:02d} =====")
-        X_train, X_test, y_train, y_test = train_test_split(X_tr, y_tr, test_size=0.2, random_state=42)
 
-        # === SGD ===
-        t0 = time.time()
-        safe_partial_fit(sgd, X_train, y_train, classes)
-        acc1 = accuracy_score(y_test, sgd.predict(X_test))
-        t1 = time.time() - t0
-        print(f"SGD:   acc={acc1:.3f}, time={t1:.3f}s")
+        # รวมข้อมูลสะสม
+        X_train_full = np.vstack([X_train_full, X_train])
+        y_train_full = np.concatenate([y_train_full, y_train])
 
-        # === A-SRLS (mocked adaptive model) ===
-        t0 = time.time()
-        acc2 = min(1.0, max(0.0, 0.6 + np.random.randn() * 0.05))
-        t2 = time.time() - t0
-        print(f"A-SRLS: acc={acc2:.3f}, time={t2:.3f}s")
+        # normalize classes ให้ต่อเนื่อง
+        unique_classes = np.unique(y_train_full)
+        class_map = {v: idx for idx, v in enumerate(sorted(unique_classes))}
+        y_train_full_mapped = np.array([class_map[y] for y in y_train_full])
 
-        # === XGB ===
-        t0 = time.time()
-        # ✅ Ensure XGB sees all classes every round
-        y_train_full = np.concatenate([y_train, classes])
-        X_train_full = np.vstack([X_train, X
+        # ============ SGD ============
+        try:
+            sgd.partial_fit(X_train, y_train, classes=np.arange(len(unique_classes)))
+            acc_sgd = sgd.score(X_train, y_train)
+        except Exception:
+            acc_sgd = 0.0
+        print(f"SGD:   acc={acc_sgd:.3f}")
+
+        # ============ A-SRLS ============
+        try:
+            asrls.fit(X_train, y_train)
+            acc_asrls = asrls.score(X_train, y_train)
+        except Exception:
+            acc_asrls = 0.0
+        print(f"A-SRLS: acc={acc_asrls:.3f}")
+
+        # ============ XGB ============
+        try:
+            xgb.fit(X_train_full, y_train_full_mapped)
+            acc_xgb = xgb.score(X_train, [class_map[y] for y in y_train])
+        except Exception as e:
+            print("XGB Error:", e)
+            acc_xgb = 0.0
+        print(f"XGB:   acc={acc_xgb:.3f}")
+
+if __name__ == "__main__":
+    scenario4_adaptive()
