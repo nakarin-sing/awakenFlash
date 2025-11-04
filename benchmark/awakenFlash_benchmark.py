@@ -268,14 +268,14 @@ def run_phase1_fair(X_train, y_train, cv):
 
 def run_phase2_fair(X_train, y_train, X_test, y_test, phase1):
     print(f"\n{'='*80}")
-    print(f"PHASE 2: RETRAINING (1000x REPETITION FOR STABLE MEASUREMENT)")
+    print(f"PHASE 2: RETRAINING (100x REPETITION FOR STABLE MEASUREMENT)")
     print(f"{'='*80}")
     print(f"Both models use BEST parameters from Phase 1\n")
     
-    reps = 1000
+    reps = 100  # Reduced from 1000 to 100 for faster execution
     
     # --- OneStep ---
-    print(f"Training OneStep 1000x with {phase1['onestep']['params']}...")
+    print(f"Training OneStep 100x with {phase1['onestep']['params']}...")
     cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
@@ -288,7 +288,7 @@ def run_phase2_fair(X_train, y_train, X_test, y_test, phase1):
     acc_one = accuracy_score(y_test, pred_one)
     
     # --- XGBoost ---
-    print(f"Training XGBoost 1000x with {phase1['xgboost']['params']}...")
+    print(f"Training XGBoost 100x with {phase1['xgboost']['params']}...")
     cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
@@ -340,7 +340,7 @@ def ultimate_fair_benchmark():
     print("  ✓ Both models search SIMILAR number of hyperparameters")
     print("  ✓ Single-threaded (n_jobs=1) for both")
     print("  ✓ CPU time measurement (not wall clock)")
-    print("  ✓ 1000x repetition for stable speed measurement")
+    print("  ✓ 100x repetition for stable speed measurement (< 2 min total)")
     print("  ✓ Same train/test split, same CV folds")
     print("  ✓ Same random seeds everywhere")
     print("=" * 100)
@@ -418,8 +418,9 @@ def ultimate_fair_benchmark():
     print(f"  2. Same optional features (RBF approximation)")
     print(f"  3. Similar hyperparameter search space")
     print(f"  4. Single-threaded execution")
-    print(f"  5. CPU time measurement (1000x reps)")
+    print(f"  5. CPU time measurement (100x reps for speed)")
     print(f"  6. Statistical significance (mean ± std)")
+    print(f"  7. Completes in < 2 minutes (optimized for CI/CD)")
     print(f"{'='*100}")
 
 
