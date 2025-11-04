@@ -83,11 +83,14 @@ def scenario_1_streaming(chunks, all_classes, memory_tracker):
     """
     SCENARIO 1: Real-time Streaming with Comprehensive Metrics
     """
+    WINDOW_SIZE = 5  # XGBoost sliding window size
+    
     print("\n" + "="*80)
     print("🔄 SCENARIO 1: REAL-TIME STREAMING (Online vs Batch)")
     print("="*80)
     print("Context: Data arrives chunk by chunk, predict immediately")
-    print("Metrics: Accuracy, Precision, Recall, F1, Speed, Memory\n")
+    print("Metrics: Accuracy, Precision, Recall, F1, Speed, Memory")
+    print(f"XGBoost uses sliding window of {WINDOW_SIZE} chunks for fairness\n")
     
     # Initialize models
     sgd = SGDClassifier(
@@ -107,7 +110,7 @@ def scenario_1_streaming(chunks, all_classes, memory_tracker):
         n_jobs=-1
     )
     
-    # XGBoost with incremental learning capability
+    # XGBoost with sliding window approach (fair compromise)
     xgb_params = {
         "objective": "multi:softmax",
         "num_class": 7,
@@ -116,13 +119,11 @@ def scenario_1_streaming(chunks, all_classes, memory_tracker):
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "verbosity": 0,
-        "nthread": -1,
-        "process_type": "update",  # Enable incremental learning
-        "updater": "refresh"
+        "nthread": -1
     }
     
-    xgb_model = None
     xgb_all_X, xgb_all_y = [], []
+    WINDOW_SIZE = 5  # Keep last 5 chunks only (fair memory usage)
     
     first_sgd = first_pa = True
     results = []
@@ -165,35 +166,28 @@ def scenario_1_streaming(chunks, all_classes, memory_tracker):
         pa_time = time.time() - start
         memory_tracker.snapshot(f'pa_chunk{chunk_id}_end')
         
-        # ===== XGBoost (Incremental) =====
+        # ===== XGBoost (Sliding Window) =====
         memory_tracker.snapshot(f'xgb_chunk{chunk_id}_start')
         start = time.time()
         
+        # Add current chunk to buffer
         xgb_all_X.append(X_train)
         xgb_all_y.append(y_train)
         
-        # Use recent data window (last 3 chunks) for efficiency
-        window_size = 3
-        if len(xgb_all_X) > window_size:
-            X_xgb_train = np.vstack(xgb_all_X[-window_size:])
-            y_xgb_train = np.concatenate(xgb_all_y[-window_size:])
-        else:
-            X_xgb_train = np.vstack(xgb_all_X)
-            y_xgb_train = np.concatenate(xgb_all_y)
+        # Keep only recent chunks (sliding window)
+        if len(xgb_all_X) > WINDOW_SIZE:
+            xgb_all_X = xgb_all_X[-WINDOW_SIZE:]
+            xgb_all_y = xgb_all_y[-WINDOW_SIZE:]
+        
+        # Train on windowed data
+        X_xgb_train = np.vstack(xgb_all_X)
+        y_xgb_train = np.concatenate(xgb_all_y)
         
         dtrain = xgb.DMatrix(X_xgb_train, label=y_xgb_train)
         dtest = xgb.DMatrix(X_test, label=y_test)
         
-        if xgb_model is None:
-            xgb_model = xgb.train(xgb_params, dtrain, num_boost_round=20)
-        else:
-            # Incremental training with warm start
-            xgb_model = xgb.train(
-                xgb_params, 
-                dtrain, 
-                num_boost_round=10,
-                xgb_model=xgb_model
-            )
+        # Train fresh model on window (not incremental, but fair)
+        xgb_model = xgb.train(xgb_params, dtrain, num_boost_round=20)
         
         xgb_pred = xgb_model.predict(dtest)
         xgb_metrics = compute_metrics(y_test, xgb_pred)
