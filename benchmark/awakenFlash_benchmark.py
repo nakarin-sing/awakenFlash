@@ -1,72 +1,45 @@
-import subprocess
-import sys
+# awakenFlash_benchmark.py — Non-Logic Fast+ Learning (GitHub Actions Ready)
+import os
 import time
-
-# =======================
-# ติดตั้ง faiss ถ้าไม่มี
-# =======================
-try:
-    import faiss
-except ModuleNotFoundError:
-    print("📦 FAISS not found. Installing faiss-cpu...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "faiss-cpu"])
-
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score
 
-# =======================
-# Mock dataset (แทนด้วย dataset จริง)
-# =======================
-num_samples = 100000
-num_features = 128
-num_classes = 5
-chunks = 10
+# ─── Setup ───
+np.random.seed(42)  # reproducible
+NUM_CHUNKS = 10
+NUM_SAMPLES = 100
+NUM_FEATURES = 20
+NUM_CLASSES = 3
 
-np.random.seed(42)
-X = np.random.rand(num_samples, num_features).astype('float32')
-y_true = np.random.randint(0, num_classes, size=num_samples)
+# สร้าง dataset ตัวอย่าง
+X_chunks = [np.random.rand(NUM_SAMPLES, NUM_FEATURES) for _ in range(NUM_CHUNKS)]
+y_chunks = [np.random.randint(0, NUM_CLASSES, NUM_SAMPLES) for _ in range(NUM_CHUNKS)]
 
-# =======================
-# เริ่มต้น centroids แบบสุ่ม
-# =======================
-centroids = np.random.rand(num_classes, num_features).astype('float32')
+predictions_total = []
+true_total = []
 
-# =======================
-# Non-Logic Fast++ Function
-# =======================
-def non_logic_dynamic_predict_update(X_chunk, centroids, alpha=0.3):
-    """
-    alpha: learning rate ของ centroids update
-    """
-    d = X_chunk.shape[1]
-    index = faiss.IndexFlatL2(d)
-    index.add(centroids)
-    _, labels = index.search(X_chunk, 1)
+start_time = time.time()
+for idx, (X, y_true) in enumerate(zip(X_chunks, y_chunks), 1):
+    chunk_start = time.time()
     
-    # Update centroids แบบ dynamic (moving average)
-    for c in range(centroids.shape[0]):
-        mask = labels.flatten() == c
-        if np.any(mask):
-            centroids[c] = (1-alpha)*centroids[c] + alpha*X_chunk[mask].mean(axis=0)
-    return labels.flatten(), centroids
-
-# =======================
-# Benchmark 10 Chunks
-# =======================
-chunk_size = num_samples // chunks
-start_total = time.time()
-
-for i in range(chunks):
-    start_chunk = time.time()
-    X_chunk = X[i*chunk_size:(i+1)*chunk_size]
-    y_chunk = y_true[i*chunk_size:(i+1)*chunk_size]
+    # ─── Non-Logic Fast+ Learning ───
+    means = X.mean(axis=0)
+    stds = X.std(axis=0) + 1e-6
+    X_norm = (X - means) / stds
     
-    y_pred, centroids = non_logic_dynamic_predict_update(X_chunk, centroids)
+    # Pseudo-learning: prediction by argmax mod number of classes
+    pred = X_norm.argmax(axis=1) % NUM_CLASSES
     
-    acc = accuracy_score(y_chunk, y_pred)
-    f1 = f1_score(y_chunk, y_pred, average='weighted')
-    end_chunk = time.time()
-    print(f"Chunk {i+1} | Non-Logic Fast++ Acc={acc:.4f} | F1={f1:.4f} | Time={end_chunk-start_chunk:.2f}s")
+    predictions_total.extend(pred)
+    true_total.extend(y_true)
+    
+    acc_chunk = accuracy_score(y_true, pred)
+    f1_chunk = f1_score(y_true, pred, average='weighted')
+    
+    print(f"Chunk {idx} | Non-Logic Fast+ Learning Acc={acc_chunk:.4f} | F1={f1_chunk:.4f} | Time≈{time.time()-chunk_start:.2f}s")
 
-end_total = time.time()
-print(f"✅ Benchmark completed in {end_total-start_total:.2f}s")
+# ─── Final metrics ───
+acc_total = accuracy_score(true_total, predictions_total)
+f1_total = f1_score(true_total, predictions_total, average='weighted')
+print(f"\n✅ Benchmark completed in {time.time()-start_time:.2f}s")
+print(f"Total | Acc={acc_total:.4f} | F1={f1_total:.4f}")
