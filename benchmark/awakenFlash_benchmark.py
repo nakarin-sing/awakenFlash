@@ -11,40 +11,36 @@ import os
 
 print("Loading dataset (this may take a few seconds)...")
 
-# ✅ ใช้ dataset ขนาดกลางจาก UCI
+# ✅ Load dataset
 from sklearn.datasets import fetch_covtype
 data = fetch_covtype()
 X, y = data.data, data.target
 
-# ✅ แบ่งเป็น chunks สำหรับจำลองการ stream
+# ✅ Normalize labels → start from 0
+y = y - y.min()
+
+# ✅ Split into chunks
 chunk_size = X.shape[0] // 5
 chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, X.shape[0], chunk_size)]
 
-# ✅ เตรียมที่เก็บผล
+# ✅ Prepare output folder
 os.makedirs("benchmark_results", exist_ok=True)
-results = []
 
-# ============================================
-# Helper function
-# ============================================
 def safe_partial_fit(model, X, y, classes):
-    """Wrapper เพื่อป้องกันค่า eta0 <= 0"""
     params = model.get_params()
     if "eta0" in params and params["eta0"] <= 0:
         print(f"[WARN] eta0 ({params['eta0']}) <= 0 → ปรับเป็น 0.01 โดยอัตโนมัติ")
         model.set_params(eta0=0.01)
     return model.partial_fit(X, y, classes=classes)
 
-# ============================================
-# Benchmark Scenario
-# ============================================
 def scenario4_adaptive():
     print("\n===== Scenario 4: Adaptive Streaming Learning =====")
     classes = np.unique(y)
 
     sgd = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=0.01, max_iter=1, warm_start=True)
     xgb = XGBClassifier(use_label_encoder=False, eval_metric="mlogloss")
-    acc_sgd, acc_xgb, acc_asrls = [], [], []
+
+    acc_sgd, acc_asrls, acc_xgb = [], [], []
 
     for i, (X_tr, y_tr) in enumerate(chunks, 1):
         print(f"\n===== Processing Chunk {i:02d} =====")
@@ -57,13 +53,13 @@ def scenario4_adaptive():
         t1 = time.time() - t0
         print(f"SGD:   acc={acc1:.3f}, time={t1:.3f}s")
 
-        # ✅ A-SRLS (จำลองโมเดลเรา)
+        # ✅ A-SRLS (mock)
         t0 = time.time()
         acc2 = 0.55 + np.random.randn() * 0.1
         t2 = time.time() - t0
         print(f"A-SRLS: acc={acc2:.3f}, time={t2:.3f}s")
 
-        # ✅ XGBoost
+        # ✅ XGBoost (safe)
         t0 = time.time()
         xgb.fit(X_train, y_train)
         acc3 = accuracy_score(y_test, xgb.predict(X_test))
@@ -90,8 +86,5 @@ def scenario4_adaptive():
     })
     df.to_csv("benchmark_results/awakenFlash_results.csv", index=False)
 
-# ============================================
-# MAIN
-# ============================================
 if __name__ == "__main__":
     scenario4_adaptive()
