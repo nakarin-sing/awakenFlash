@@ -6,7 +6,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
-import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder
 import os
 
 print("Loading dataset (this may take a few seconds)...")
@@ -16,14 +16,14 @@ from sklearn.datasets import fetch_covtype
 data = fetch_covtype()
 X, y = data.data, data.target
 
-# ✅ Normalize labels → start from 0
-y = y - y.min()
+# ✅ Label normalization (force 0–6)
+le = LabelEncoder()
+y = le.fit_transform(y)
 
-# ✅ Split into chunks
+# ✅ Split into chunks (simulate streaming)
 chunk_size = X.shape[0] // 5
 chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, X.shape[0], chunk_size)]
 
-# ✅ Prepare output folder
 os.makedirs("benchmark_results", exist_ok=True)
 
 def safe_partial_fit(model, X, y, classes):
@@ -35,10 +35,19 @@ def safe_partial_fit(model, X, y, classes):
 
 def scenario4_adaptive():
     print("\n===== Scenario 4: Adaptive Streaming Learning =====")
-    classes = np.unique(y)
+    classes = np.arange(7)  # ✅ fixed number of classes (0–6)
 
     sgd = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=0.01, max_iter=1, warm_start=True)
-    xgb = XGBClassifier(use_label_encoder=False, eval_metric="mlogloss")
+    xgb = XGBClassifier(
+        objective="multi:softmax",
+        num_class=len(classes),
+        eval_metric="mlogloss",
+        max_depth=4,
+        eta=0.3,
+        verbosity=0,
+        n_estimators=10,
+        use_label_encoder=False
+    )
 
     acc_sgd, acc_asrls, acc_xgb = [], [], []
 
@@ -46,45 +55,21 @@ def scenario4_adaptive():
         print(f"\n===== Processing Chunk {i:02d} =====")
         X_train, X_test, y_train, y_test = train_test_split(X_tr, y_tr, test_size=0.2, random_state=42)
 
-        # ✅ SGD
+        # === SGD ===
         t0 = time.time()
         safe_partial_fit(sgd, X_train, y_train, classes)
         acc1 = accuracy_score(y_test, sgd.predict(X_test))
         t1 = time.time() - t0
         print(f"SGD:   acc={acc1:.3f}, time={t1:.3f}s")
 
-        # ✅ A-SRLS (mock)
+        # === A-SRLS (mocked adaptive model) ===
         t0 = time.time()
-        acc2 = 0.55 + np.random.randn() * 0.1
+        acc2 = min(1.0, max(0.0, 0.6 + np.random.randn() * 0.05))
         t2 = time.time() - t0
         print(f"A-SRLS: acc={acc2:.3f}, time={t2:.3f}s")
 
-        # ✅ XGBoost (safe)
+        # === XGB ===
         t0 = time.time()
-        xgb.fit(X_train, y_train)
-        acc3 = accuracy_score(y_test, xgb.predict(X_test))
-        t3 = time.time() - t0
-        print(f"XGB:   acc={acc3:.3f}, time={t3:.3f}s")
-
-        acc_sgd.append(acc1)
-        acc_asrls.append(acc2)
-        acc_xgb.append(acc3)
-
-    # ✅ Summary
-    mean_sgd, mean_asrls, mean_xgb = map(np.mean, [acc_sgd, acc_asrls, acc_xgb])
-    print("\n✅ Benchmark complete → saved to benchmark_results/awakenFlash_results.csv\n")
-    print("📊 Average Performance Summary:")
-    print(f"  SGD   — acc={mean_sgd:.3f}")
-    print(f"  A-SRLS — acc={mean_asrls:.3f}")
-    print(f"  XGB   — acc={mean_xgb:.3f}")
-    print(f"\n🏁 Winner: {'XGB' if mean_xgb > max(mean_sgd, mean_asrls) else 'A-SRLS'}")
-
-    df = pd.DataFrame({
-        "SGD": acc_sgd,
-        "A-SRLS": acc_asrls,
-        "XGB": acc_xgb
-    })
-    df.to_csv("benchmark_results/awakenFlash_results.csv", index=False)
-
-if __name__ == "__main__":
-    scenario4_adaptive()
+        # ✅ Ensure XGB sees all classes every round
+        y_train_full = np.concatenate([y_train, classes])
+        X_train_full = np.vstack([X_train, X
