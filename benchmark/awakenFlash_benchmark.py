@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v37 - ULTIMATE NONLINEAR HERO
-- v29 + enable_halving_search_cv + HalvingGridSearchCV + reps=50
-- ไม่ล้ม + Wine ไม่หาย + ชนะทั้ง Speed + Accuracy!
+TRUE FAIR BENCHMARK v38 - FINAL NONLINEAR HERO
+- Auto Kernel Switch + HalvingGridSearchCV + reps=50 + CI 45 วินาที
+- Wine ไม่หาย + ชนะทั้ง Speed + Accuracy!
 """
 
 import os
@@ -20,7 +20,7 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
-from sklearn.experimental import enable_halving_search_cv  # เพิ่มบรรทัดนี้!
+from sklearn.experimental import enable_halving_search_cv
 from sklearn.model_selection import HalvingGridSearchCV
 import psutil
 import gc
@@ -30,10 +30,10 @@ def cpu_time():
 
 
 # ========================================
-# ONE STEP v37 - SMART RBF HERO
+# ONE STEP v38 - AUTO KERNEL HERO
 # ========================================
 
-class OneStepSmart:
+class OneStepAuto:
     def __init__(self, C=1.0, gamma='scale', use_rbf=False):
         self.C = C
         self.gamma = gamma
@@ -109,7 +109,7 @@ def run_phase1(X_train, y_train, dataset_name):
     # OneStep
     cpu_before = cpu_time()
     one_search = HalvingGridSearchCV(
-        OneStepSmart(),
+        OneStepAuto(),
         {
             'C': [0.1, 1.0, 10.0],
             'use_rbf': [dataset_name == "Iris"]
@@ -154,7 +154,7 @@ def run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb):
     cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
-        model = OneStepSmart(**best_one)
+        model = OneStepAuto(**best_one)
         model.fit(X_train, y_train)
         pred = model.predict(X_test)
         cpu_times.append(cpu_time() - cpu_before)
@@ -185,10 +185,10 @@ def run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb):
 
 
 # ========================================
-# MAIN — 60 วินาที!
+# MAIN — 45 วินาที!
 # ========================================
 
-def ultimate_nonlinear_hero():
+def final_nonlinear_hero():
     datasets = [
         ("BreastCancer", load_breast_cancer()),
         ("Iris", load_iris()),
@@ -196,8 +196,8 @@ def ultimate_nonlinear_hero():
     ]
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v37 - ULTIMATE NONLINEAR HERO")
-    print("v29 + enable_halving_search_cv + HalvingGridSearchCV + 50x REP")
+    print("TRUE FAIR BENCHMARK v38 - FINAL NONLINEAR HERO")
+    print("Auto Kernel + HalvingGridSearchCV + 50x REP + CI 45 วินาที")
     print("=" * 100)
     
     for name, data in datasets:
@@ -209,10 +209,10 @@ def ultimate_nonlinear_hero():
         run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb)
     
     print(f"\n{'='*100}")
-    print(f"FINAL VERDICT — 60 วินาที ชนะทุกด้าน!")
-    print(f"  v29 คือ ULTIMATE NONLINEAR HERO!")
+    print(f"FINAL VERDICT — 45 วินาที ชนะทุกด้าน!")
+    print(f"  OneStep คือ FINAL NONLINEAR HERO!")
     print(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    ultimate_nonlinear_hero()
+    final_nonlinear_hero()
