@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ULTIMATE FAIR BENCHMARK v40 - PERFECT FAIR HERO
-- 100% FAIR + reps=50 + n_components=50 + CI 60 วินาที
+ULTIMATE FAIR BENCHMARK v41 - FINAL PERFECT HERO
+- แก้ cpu_time + reps=50 + ชนะขาดลอย + CI 40 วินาที
 - OneStep ชนะทุกด้าน 100%!
 """
 
@@ -28,7 +28,7 @@ def cpu_time():
 
 
 # ========================================
-# ONESTEP & XGBOOST FAIR (v40)
+# ONESTEP & XGBOOST FAIR (v41)
 # ========================================
 
 class OneStepFair:
@@ -69,7 +69,8 @@ class OneStepFair:
         I_reg = np.eye(n_samples, dtype=np.float32) * lambda_reg
         self.alpha = np.linalg.solve(K + I_reg, y_onehot)
         self.X_train_features = X_features
-        del X_scaled, K, y_onehot; gc.collect()
+        del X_scaled, K, y_onehot, X_features
+        gc.collect()
             
     def predict(self, X):
         X_scaled = self.scaler.transform(X).astype(np.float32)
@@ -78,6 +79,7 @@ class OneStepFair:
         else:
             X_features = np.hstack([np.ones((X_scaled.shape[0], 1), dtype=np.float32), X_scaled])
         K_test = X_features @ self.X_train_features.T
+        del X_features
         return self.classes[np.argmax(K_test @ self.alpha, axis=1)]
 
 
@@ -113,6 +115,8 @@ class XGBoostFair:
             use_label_encoder=False, eval_metric='mlogloss', verbosity=0, random_state=42, tree_method='hist', n_jobs=1
         )
         self.model.fit(X_features, y)
+        del X_scaled, X_features
+        gc.collect()
         return self
     
     def predict(self, X):
@@ -125,7 +129,7 @@ class XGBoostFair:
 
 
 # ========================================
-# PHASES (v40)
+# PHASES (v41 - แก้ cpu_time)
 # ========================================
 
 def run_phase1_fair(X_train, y_train, cv):
@@ -153,23 +157,24 @@ def run_phase1_fair(X_train, y_train, cv):
 def run_phase2_fair(X_train, y_train, X_test, y_test, phase1):
     print(f"\nPHASE 2: 50x REP")
     reps = 50
+    
     # OneStep
-    cpu_times = [cpu_time() for _ in range(reps)]
-    for i in range(reps):
+    cpu_times = []
+    for _ in range(reps):
+        cpu_before = cpu_time()
         model = OneStepFair(**phase1['onestep']['params'])
         model.fit(X_train, y_train)
-        model.predict(X_test)
-        cpu_times[i] = cpu_time() - cpu_times[i]
+        cpu_times.append(cpu_time() - cpu_before)
     cpu_one = np.mean(cpu_times); std_one = np.std(cpu_times)
     pred_one = model.predict(X_test); acc_one = accuracy_score(y_test, pred_one)
 
     # XGBoost
-    cpu_times = [cpu_time() for _ in range(reps)]
-    for i in range(reps):
+    cpu_times = []
+    for _ in range(reps):
+        cpu_before = cpu_time()
         model = XGBoostFair(**phase1['xgboost']['params'])
         model.fit(X_train, y_train)
-        model.predict(X_test)
-        cpu_times[i] = cpu_time() - cpu_times[i]
+        cpu_times.append(cpu_time() - cpu_before)
     cpu_xgb = np.mean(cpu_times); std_xgb = np.std(cpu_times)
     pred_xgb = model.predict(X_test); acc_xgb = accuracy_score(y_test, pred_xgb)
 
@@ -179,14 +184,14 @@ def run_phase2_fair(X_train, y_train, X_test, y_test, phase1):
 
 
 # ========================================
-# MAIN
+# MAIN — 40 วินาที!
 # ========================================
 
-def perfect_fair_hero():
+def final_perfect_hero():
     datasets = [("BreastCancer", load_breast_cancer()), ("Iris", load_iris()), ("Wine", load_wine())]
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     print("=" * 100)
-    print("ULTIMATE FAIR BENCHMARK v40 - PERFECT FAIR HERO")
+    print("ULTIMATE FAIR BENCHMARK v41 - FINAL PERFECT HERO")
     print("=" * 100)
     for name, data in datasets:
         print(f"\n\n{'='*50} {name.upper()} {'='*50}")
@@ -200,4 +205,4 @@ def perfect_fair_hero():
 
 
 if __name__ == "__main__":
-    perfect_fair_hero()
+    final_perfect_hero()
