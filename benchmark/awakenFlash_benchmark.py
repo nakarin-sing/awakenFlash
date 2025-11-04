@@ -1,96 +1,123 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-awakenFlash_benchmark.py
-Real-world streaming benchmark for AwakenFlash
-"""
-
-import os
-import time
+import os, time, gzip, io, requests
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import SGDClassifier, RidgeClassifier
+from sklearn.linear_model import SGDClassifier
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score
-import xgboost as xgb
 
 
+# ===============================================================
+# 🧠 RLS++ — Recursive Least Squares with Nonlinear Expansion
+# ===============================================================
+class RLSPlus:
+    def __init__(self, n_features, lam=0.98, delta=1.0):
+        self.lam = lam
+        self.delta = delta
+        self.P = (1.0 / delta) * np.eye(n_features)
+        self.w = np.zeros((n_features, 1))
+
+    def expand_features(self, X):
+        # Fourier + Polynomial Expansion (lightweight)
+        X2 = X ** 2
+        Xsin = np.sin(X * 0.5)
+        Xcos = np.cos(X * 0.5)
+        return np.hstack([X, X2, Xsin, Xcos])
+
+    def update(self, X, y):
+        X = self.expand_features(X)
+        for xi, yi in zip(X, y):
+            xi = xi.reshape(-1, 1)
+            k = self.P @ xi / (self.lam + xi.T @ self.P @ xi)
+            err = yi - float(xi.T @ self.w)
+            self.w += k * err
+            self.P = (self.P - k @ xi.T @ self.P) / self.lam
+        # Adaptive lambda decay
+        self.lam = max(0.95 * self.lam, 0.90)
+
+    def predict(self, X):
+        X = self.expand_features(X)
+        preds = X @ self.w
+        return (preds > 0.5).astype(int).ravel()
+
+
+# ===============================================================
+# 📊 Dataset Loader — UCI Covertype (Streaming)
+# ===============================================================
+def stream_covtype(url, chunk_size=10000):
+    print(f"🔗 Loading dataset streaming from: [{url}]")
+    with requests.get(url, stream=True) as r:
+        with gzip.GzipFile(fileobj=io.BytesIO(r.content)) as f:
+            data = np.loadtxt(f, delimiter=",")
+            X, y = data[:, :-1], data[:, -1]
+            for i in range(0, len(X), chunk_size):
+                yield X[i:i+chunk_size], y[i:i+chunk_size]
+
+
+# ===============================================================
+# 🚀 Benchmark Runner
+# ===============================================================
 def benchmark():
-    print("🚀 Starting benchmark...")
-
-    # === 1. Load dataset ===
-    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-    print(f"🔗 Loading dataset streaming from: {url}")
-
-    df = pd.read_csv(url, header=None)
-    X_all = df.iloc[:, :-1].values
-    y_all = df.iloc[:, -1].values - 1  # Convert to 0–6
-
-    # All classes for partial_fit
-    all_classes = np.unique(y_all)
-
-    # Split into chunks to simulate streaming
-    chunk_size = 10000
-    chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) for i in range(0, len(X_all), chunk_size)]
-
-    # === 2. Init models ===
-    sgd = SGDClassifier(loss="log_loss", max_iter=1, warm_start=True)
-    rls = RidgeClassifier()
-    xgb_model = None  # will init later
-
-    first_sgd = True
-
     os.makedirs("benchmark_results", exist_ok=True)
+    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
+    chunk_gen = stream_covtype(url)
 
-    # === 3. Stream loop ===
-    for chunk_id, (X, y) in enumerate(chunks[:5], start=1):  # limit 5 chunks for speed
-        print(f"\n===== Processing Chunk {chunk_id:02d} =====")
+    sgd = SGDClassifier(loss="log_loss", max_iter=1, learning_rate="optimal")
+    xgb = XGBClassifier(
+        n_estimators=20, max_depth=5, learning_rate=0.2,
+        subsample=0.5, colsample_bytree=0.5, verbosity=0
+    )
 
-        # SGD (online)
-        start = time.time()
-        if first_sgd:
-            sgd.partial_fit(X, y, classes=all_classes)
-            first_sgd = False
-        else:
-            sgd.partial_fit(X, y)
-        sgd_acc = sgd.score(X, y)
-        sgd_time = time.time() - start
-        print(f"SGD: acc={sgd_acc:.3f}, time={sgd_time:.3f}s")
+    scaler = StandardScaler()
+    first_chunk = True
+    chunk_logs = []
 
-        # Ridge (batch)
-        start = time.time()
-        rls.fit(X, y)
-        rls_acc = rls.score(X, y)
-        rls_time = time.time() - start
-        print(f"RLS: acc={rls_acc:.3f}, time={rls_time:.3f}s")
+    print("🚀 Starting benchmark...\n")
 
-        # XGBoost (mini batch training)
-        start = time.time()
-        dtrain = xgb.DMatrix(X, label=y)
-        if xgb_model is None:
-            xgb_model = xgb.train(
-                {"objective": "multi:softmax", "num_class": 7, "verbosity": 0},
-                dtrain,
-                num_boost_round=10,
-            )
-        else:
-            xgb_model = xgb.train(
-                {"objective": "multi:softmax", "num_class": 7, "verbosity": 0},
-                dtrain,
-                num_boost_round=5,
-                xgb_model=xgb_model,
-            )
-        preds = xgb_model.predict(dtrain)
-        xgb_acc = accuracy_score(y, preds)
-        xgb_time = time.time() - start
-        print(f"XGB: acc={xgb_acc:.3f}, time={xgb_time:.3f}s")
+    for i, (X, y) in enumerate(chunk_gen, 1):
+        if i > 5:
+            break  # Limit for CI speed
 
-        # Save per-chunk results
-        with open("benchmark_results/chunk_log.txt", "a") as f:
-            f.write(
-                f"Chunk {chunk_id:02d}: SGD={sgd_acc:.3f}, RLS={rls_acc:.3f}, XGB={xgb_acc:.3f}\n"
-            )
+        X = scaler.fit_transform(X)
+        y = (y > 3).astype(int)  # binary simplify
 
-    print("\n✅ Benchmark finished successfully.")
+        # Initialize RLS++ with expanded feature dim
+        if first_chunk:
+            n_features_expanded = X.shape[1] * 4  # after expansion
+            rls = RLSPlus(n_features_expanded)
+            first_chunk = False
+
+        # === SGD ===
+        t0 = time.time()
+        sgd.partial_fit(X, y, classes=np.unique(y))
+        sgd_acc = accuracy_score(y, sgd.predict(X))
+        sgd_time = time.time() - t0
+
+        # === RLS++ ===
+        t0 = time.time()
+        rls.update(X, y)
+        rls_acc = accuracy_score(y, rls.predict(X))
+        rls_time = time.time() - t0
+
+        # === XGB ===
+        t0 = time.time()
+        xgb.fit(X, y)
+        xgb_acc = accuracy_score(y, xgb.predict(X))
+        xgb_time = time.time() - t0
+
+        msg = (
+            f"===== Processing Chunk {i:02d} =====\n"
+            f"SGD: acc={sgd_acc:.3f}, time={sgd_time:.3f}s\n"
+            f"RLS++: acc={rls_acc:.3f}, time={rls_time:.3f}s\n"
+            f"XGB: acc={xgb_acc:.3f}, time={xgb_time:.3f}s\n"
+        )
+        print(msg)
+        chunk_logs.append(msg)
+
+    with open("benchmark_results/chunk_log.txt", "w") as f:
+        f.writelines(chunk_logs)
+
+    print("✅ Benchmark finished successfully.")
     print("Results saved to benchmark_results/chunk_log.txt")
 
 
