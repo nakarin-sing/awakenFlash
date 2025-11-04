@@ -1,51 +1,72 @@
-# awakenFlash_benchmark_fast.py
+# awakenFlash_nonlogic_fast_enhanced.py
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import NearestNeighbors
-from sklearn.datasets import make_classification
-from sklearn.metrics import accuracy_score, f1_score
+from concurrent.futures import ThreadPoolExecutor
+import faiss
 import time
 
-# ===========================
-# Dataset simulation
-# ===========================
-print("📦 Loading dataset...")
-X, y = make_classification(n_samples=100000, n_features=54, n_informative=20,
-                           n_classes=7, random_state=42)
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
+# ===============================
+# Configuration
+# ===============================
+dim = 128  # embedding dimension
+batch_size = 32
+k_neighbors = 5  # top-k for approximate voting
+max_workers = 8  # parallelism
 
-# Split into chunks
-chunk_size = 10000
-chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, X.shape[0], chunk_size)]
+# ===============================
+# Dummy dataset & embeddings
+# Replace these with real embeddings
+# ===============================
+np.random.seed(42)
+num_samples = 10000
+train_embeddings = np.random.rand(num_samples, dim).astype('float32')
+train_labels = np.random.randint(0, 2, size=num_samples)
+test_embeddings = np.random.rand(num_samples, dim).astype('float32')
 
-# ===========================
-# Non-Logic "Fast" Benchmark
-# ===========================
-print("🚀 Running Non-Logic Fast Benchmark...")
+# ===============================
+# Build FAISS index (L2)
+# ===============================
+index = faiss.IndexFlatL2(dim)
+index.add(train_embeddings)
 
-results = []
+# ===============================
+# Mini-batch prediction function
+# ===============================
+def predict_batch(batch_emb):
+    # Search nearest neighbors
+    D, I = index.search(batch_emb, k_neighbors)
+    # Majority vote
+    preds = np.array([np.bincount(I_row, weights=None).argmax() for I_row in I])
+    return preds
 
-for i, (X_chunk, y_chunk) in enumerate(chunks, 1):
-    start = time.time()
-    
-    # ใช้ NearestNeighbors แทน FAISS
-    nn = NearestNeighbors(n_neighbors=5, algorithm='auto').fit(X_chunk)
-    distances, indices = nn.kneighbors(X_chunk)
-    
-    # Fake predictions แบบเร็วๆ (ใช้ majority vote ของ neighbors)
-    y_pred = []
-    for idx_list in indices:
-        neighbors = y_chunk[idx_list]
-        counts = np.bincount(neighbors)
-        y_pred.append(np.argmax(counts))
-    y_pred = np.array(y_pred)
-    
-    acc = accuracy_score(y_chunk, y_pred)
-    f1 = f1_score(y_chunk, y_pred, average='macro')
-    
-    elapsed = time.time() - start
-    print(f"Chunk {i} | Non-Logic Fast Acc={acc:.4f} | F1={f1:.4f} | Time={elapsed:.2f}s")
-    results.append((acc, f1, elapsed))
+# ===============================
+# Parallel batch processing
+# ===============================
+def chunk_embeddings(embeddings, size):
+    for i in range(0, len(embeddings), size):
+        yield embeddings[i:i+size]
 
-print("✅ Benchmark completed in {:.2f}s".format(sum(r[2] for r in results)))
+start_time = time.time()
+
+batches = list(chunk_embeddings(test_embeddings, batch_size))
+predictions = []
+
+with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    results = list(executor.map(predict_batch, batches))
+    for r in results:
+        predictions.extend(r)
+
+predictions = np.array(predictions)
+
+# ===============================
+# Accuracy / F1 Evaluation (dummy)
+# ===============================
+from sklearn.metrics import accuracy_score, f1_score
+# Dummy true labels
+true_labels = np.random.randint(0, 2, size=len(predictions))
+
+acc = accuracy_score(true_labels, predictions)
+f1 = f1_score(true_labels, predictions)
+
+end_time = time.time()
+
+print(f"✅ Non-Logic Fast Enhanced Acc={acc:.4f} | F1={f1:.4f} | Time={end_time-start_time:.2f}s")
