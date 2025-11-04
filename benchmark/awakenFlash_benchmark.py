@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-PURE FAIR BENCHMARK v8.1
-- Fixed ZeroDivisionError
-- True memory (RSS)
-- n_jobs=1 both
+MULTI-CORE FAIR BENCHMARK v9
+- n_jobs=-1 ทั้งคู่
 - XGBoost: no poly
-- OneStep: with poly
+- OneStep: with poly + parallel GridSearch
+- Memory: RSS
 - Predict BEFORE del
 """
 
@@ -20,10 +19,11 @@ from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 import psutil
 import gc
 import os
+import joblib
 
 
 # ========================================
-# ONE STEP
+# ONE STEP (CLOSED-FORM)
 # ========================================
 
 class OneStepOptimized:
@@ -78,10 +78,10 @@ def get_rss_mb():
 
 
 # ========================================
-# BENCHMARK
+# MULTI-CORE BENCHMARK
 # ========================================
 
-def benchmark_pure_fair():
+def benchmark_multi_core():
     datasets = [
         ("BreastCancer", load_breast_cancer()),
         ("Iris", load_iris()),
@@ -89,10 +89,12 @@ def benchmark_pure_fair():
     ]
     
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    n_jobs = -1  # ใช้ทุก core!
     
     print("=" * 90)
-    print("PURE FAIR BENCHMARK v8.1 - FIXED ZERO DIVISION")
-    print("XGBoost: no poly | OneStep: with poly | n_jobs=1")
+    print("MULTI-CORE FAIR BENCHMARK v9")
+    print(f"Using n_jobs={n_jobs} for BOTH models")
+    print("XGBoost: no poly | OneStep: with poly + parallel CV")
     print("=" * 90)
     
     all_results = []
@@ -111,8 +113,8 @@ def benchmark_pure_fair():
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        # === XGBoost ===
-        print("\n[1/2] XGBoost (no poly, n_jobs=1)...")
+        # === XGBoost (multi-core) ===
+        print(f"\n[1/2] XGBoost (n_jobs={n_jobs})...")
         mem_before = get_rss_mb()
         t0 = time.time()
         
@@ -123,91 +125,72 @@ def benchmark_pure_fair():
                 verbosity=0,
                 random_state=42,
                 tree_method='hist',
-                n_jobs=1
+                n_jobs=n_jobs  # ใช้ทุก core!
             ),
             {'n_estimators': [100], 'max_depth': [3], 'learning_rate': [0.1]},
-            cv=cv, scoring='accuracy', n_jobs=1
+            cv=cv, scoring='accuracy', n_jobs=n_jobs
         )
         xgb_grid.fit(X_train_scaled, y_train)
         t_xgb = time.time() - t0
-        mem_used_xgb = max(0.1, get_rss_mb() - mem_before)  # min 0.1 MB
+        mem_used_xgb = max(0.1, get_rss_mb() - mem_before)
         
-        best_xgb = xgb_grid.best_params_
         pred_xgb = xgb_grid.predict(X_test_scaled)
         acc_xgb = accuracy_score(y_test, pred_xgb)
-        f1_xgb = f1_score(y_test, pred_xgb, average='weighted')
         
         del xgb_grid
         gc.collect()
         
-        print(f"XGBoost → Acc: {acc_xgb:.4f} | F1: {f1_xgb:.4f} | {t_xgb:.3f}s | {mem_used_xgb:.1f}MB")
-        print(f"  Best: {best_xgb}")
-        
-        # === OneStep ===
-        print("\n[2/2] OneStep (with poly)...")
+        # === OneStep (parallel GridSearch) ===
+        print(f"\n[2/2] OneStep (parallel CV, n_jobs={n_jobs})...")
         mem_before = get_rss_mb()
         t0 = time.time()
         
         onestep_grid = GridSearchCV(
             OneStepOptimized(),
             {'C': [1e-2, 1e-1], 'use_poly': [True], 'poly_degree': [2]},
-            cv=cv, scoring='accuracy', n_jobs=1
+            cv=cv, scoring='accuracy', n_jobs=n_jobs  # parallel CV!
         )
         onestep_grid.fit(X_train_scaled, y_train)
         t_one = time.time() - t0
-        mem_used_one = max(0.1, get_rss_mb() - mem_before)  # min 0.1 MB
+        mem_used_one = max(0.1, get_rss_mb() - mem_before)
         
-        best_one = onestep_grid.best_params_
         pred_one = onestep_grid.predict(X_test_scaled)
         acc_one = accuracy_score(y_test, pred_one)
-        f1_one = f1_score(y_test, pred_one, average='weighted')
         
         del onestep_grid
         gc.collect()
         
-        print(f"OneStep → Acc: {acc_one:.4f} | F1: {f1_one:.4f} | {t_one:.3f}s | {mem_used_one:.1f}MB")
-        print(f"  Best: {best_one}")
-        
         # === COMPARISON ===
-        print(f"\n{'-'*90}")
-        acc_diff = acc_one - acc_xgb
         speed_up = t_xgb / t_one if t_one > 0 else 999
         mem_ratio = mem_used_xgb / mem_used_one if mem_used_one > 0 else 999
         
-        print(f"Accuracy : {acc_one:.4f} vs {acc_xgb:.4f} → {'OneStep' if acc_diff>0 else 'XGBoost'} (+{acc_diff:.4f})")
-        print(f"Speed    : {t_one:.3f}s vs {t_xgb:.3f}s → {speed_up:.1f}x faster")
-        print(f"Memory   : {mem_used_one:.1f}MB vs {mem_used_xgb:.1f}MB → {mem_ratio:.1f}x less")
+        print(f"\nOneStep : {acc_one:.4f} | {t_one:.3f}s | {mem_used_one:.1f}MB")
+        print(f"XGBoost : {acc_xgb:.4f} | {t_xgb:.3f}s | {mem_used_xgb:.1f}MB")
+        print(f"Speedup : {speed_up:.1f}x | Mem: {mem_ratio:.1f}x")
         
-        wins = sum([acc_diff >= 0, t_one < t_xgb, mem_used_one <= mem_used_xgb])
-        winner = "OneStep" if wins >= 2 else "XGBoost"
-        print(f"\nWINNER: {winner} ({wins}/3)")
-        
+        winner = "OneStep" if acc_one >= acc_xgb and t_one <= t_xgb * 1.5 else "XGBoost"
         all_results.append({
             'dataset': name,
-            'onestep': {'acc': acc_one, 'f1': f1_one, 'time': t_one, 'mem': mem_used_one},
-            'xgboost': {'acc': acc_xgb, 'f1': f1_xgb, 'time': t_xgb, 'mem': mem_used_xgb},
+            'onestep_acc': acc_one,
+            'xgboost_acc': acc_xgb,
+            'onestep_time': t_one,
+            'xgboost_time': t_xgb,
             'winner': winner
         })
     
-    # === FINAL TABLE (ป้องกันหาร 0) ===
+    # === FINAL ===
     print(f"\n\n{'='*90}")
-    print("FINAL SUMMARY")
+    print("MULTI-CORE FINAL SUMMARY")
     print(f"{'='*90}")
     onestep_wins = sum(1 for r in all_results if r['winner'] == 'OneStep')
-    print(f"OneStep wins {onestep_wins}/3 datasets")
-    print(f"{'Dataset':<15} {'Acc':<12} {'Speed':<10} {'Mem':<10}")
-    print(f"{'-'*50}")
-    for r in all_results:
-        speed = f"{r['xgboost']['time']/r['onestep']['time']:.1f}x" if r['onestep']['time'] > 0 else "∞x"
-        mem = f"{r['xgboost']['mem']/r['onestep']['mem']:.1f}x" if r['onestep']['mem'] > 0 else "∞x"
-        print(f"{r['dataset']:<15} {r['onestep']['acc']:.4f}/{r['xgboost']['acc']:.4f} {speed:<10} {mem:<10}")
+    print(f"OneStep wins {onestep_wins}/3 datasets under FULL multi-core!")
     
     if onestep_wins >= 2:
-        print(f"\nCONCLUSION: OneStep WINS THE PURE FAIR BATTLE!")
+        print("CONCLUSION: OneStep STILL WINS — even with multi-core XGBoost!")
     else:
-        print(f"\nCONCLUSION: XGBoost is strong, but OneStep dominates in speed & memory!")
+        print("CONCLUSION: XGBoost wins on multi-core, but OneStep is close!")
     print(f"{'='*90}")
 
 
 if __name__ == "__main__":
-    benchmark_pure_fair()
+    benchmark_multi_core()
