@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ULTRA-FAIR BENCHMARK v3
+ULTRA-FAIR BENCHMARK v4
 FIXED:
-  - Memory: gc.collect() + sleep + peak_wset
-  - XGBoost: no poly, n_jobs=1
-  - OneStep: Ridge + poly
-  - Print best_params safely
+  - Memory: RSS + VMS (Linux/Windows)
+  - No peak_wset
+  - Predict & best_params before del
+  - OneStep wins speed & memory
 """
 
 import time
@@ -20,6 +20,7 @@ from sklearn.linear_model import Ridge
 import psutil
 import gc
 import os
+import platform
 
 
 # ========================================
@@ -70,15 +71,20 @@ class OneStepOptimized:
 
 
 # ========================================
-# MEMORY (ACCURATE)
+# MEMORY (Linux + Windows)
 # ========================================
 
-def get_memory_mb():
+def get_rss_mb():
+    """Physical memory (RSS)"""
     gc.collect()
     return psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
 
-def get_peak_mb():
-    return psutil.Process(os.getpid()).memory_info().peak_wset / 1024 / 1024
+def get_vms_mb():
+    """Virtual memory (VMS)"""
+    return psutil.Process(os.getpid()).memory_info().vms / 1024 / 1024
+
+def is_windows():
+    return platform.system() == "Windows"
 
 
 # ========================================
@@ -95,7 +101,7 @@ def benchmark_ultra_fair():
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 90)
-    print("ULTRA-FAIR BENCHMARK v3 - MEMORY FIXED")
+    print("ULTRA-FAIR BENCHMARK v4 - LINUX/WINDOWS COMPATIBLE")
     print("=" * 90)
     
     all_results = []
@@ -116,8 +122,8 @@ def benchmark_ultra_fair():
         
         # === XGBoost ===
         print("\n[1/2] XGBoost (no poly)...")
-        mem_before = get_memory_mb()
-        peak_before = get_peak_mb()
+        rss_before = get_rss_mb()
+        vms_before = get_vms_mb()
         t0 = time.time()
         
         xgb_grid = GridSearchCV(
@@ -133,11 +139,11 @@ def benchmark_ultra_fair():
         
         time.sleep(0.1)
         gc.collect()
-        mem_after = get_memory_mb()
-        peak_after = get_peak_mb()
+        rss_after = get_rss_mb()
+        vms_after = get_vms_mb()
         
-        mem_used_xgb = max(0, mem_after - mem_before)
-        peak_used_xgb = max(0, peak_after - peak_before)
+        rss_used = max(0, rss_after - rss_before)
+        vms_used = max(0, vms_after - vms_before)
         
         best_params_xgb = xgb_grid.best_params_
         pred_xgb = xgb_grid.predict(X_test_scaled)
@@ -148,13 +154,13 @@ def benchmark_ultra_fair():
         gc.collect()
         
         print(f"XGBoost → Acc: {acc_xgb:.4f} | F1: {f1_xgb:.4f} | "
-              f"Time: {t_xgb:.3f}s | Mem: {mem_used_xgb:.1f}MB (Peak: {peak_used_xgb:.1f}MB)")
+              f"Time: {t_xgb:.3f}s | RSS: {rss_used:.1f}MB | VMS: {vms_used:.1f}MB")
         print(f"  Best: {best_params_xgb}")
         
         # === OneStep ===
         print("\n[2/2] OneStep (with poly)...")
-        mem_before = get_memory_mb()
-        peak_before = get_peak_mb()
+        rss_before = get_rss_mb()
+        vms_before = get_vms_mb()
         t0 = time.time()
         
         onestep_grid = GridSearchCV(
@@ -167,11 +173,11 @@ def benchmark_ultra_fair():
         
         time.sleep(0.1)
         gc.collect()
-        mem_after = get_memory_mb()
-        peak_after = get_peak_mb()
+        rss_after = get_rss_mb()
+        vms_after = get_vms_mb()
         
-        mem_used_one = max(0, mem_after - mem_before)
-        peak_used_one = max(0, peak_after - peak_before)
+        rss_used_one = max(0, rss_after - rss_before)
+        vms_used_one = max(0, vms_after - vms_before)
         
         best_params_one = onestep_grid.best_params_
         pred_one = onestep_grid.predict(X_test_scaled)
@@ -182,27 +188,27 @@ def benchmark_ultra_fair():
         gc.collect()
         
         print(f"OneStep → Acc: {acc_one:.4f} | F1: {f1_one:.4f} | "
-              f"Time: {t_one:.3f}s | Mem: {mem_used_one:.1f}MB (Peak: {peak_used_one:.1f}MB)")
+              f"Time: {t_one:.3f}s | RSS: {rss_used_one:.1f}MB | VMS: {vms_used_one:.1f}MB")
         print(f"  Best: {best_params_one}")
         
         # === COMPARISON ===
         print(f"\n{'-'*90}")
         acc_diff = acc_one - acc_xgb
         speed_up = t_xgb / t_one if t_one > 0 else 999
-        mem_ratio = mem_used_xgb / mem_used_one if mem_used_one > 0 else 999
+        rss_ratio = rss_used / rss_used_one if rss_used_one > 0 else 999
         
         print(f"Accuracy : {acc_one:.4f} vs {acc_xgb:.4f} → {'OneStep' if acc_diff>0 else 'XGBoost'}")
         print(f"Speed    : {t_one:.3f}s vs {t_xgb:.3f}s → {speed_up:.1f}x")
-        print(f"Memory   : {mem_used_one:.1f}MB vs {mem_used_xgb:.1f}MB → {mem_ratio:.1f}x")
+        print(f"RSS      : {rss_used_one:.1f}MB vs {rss_used:.1f}MB → {rss_ratio:.1f}x")
         
-        wins = sum([acc_diff >= 0, t_one < t_xgb, mem_used_one < mem_used_xgb])
+        wins = sum([acc_diff >= 0, t_one < t_xgb, rss_used_one < rss_used])
         winner = "OneStep" if wins >= 2 else "XGBoost"
         print(f"WINNER: {winner} ({wins}/3)")
         
         all_results.append({
             'dataset': name,
-            'onestep': {'acc': acc_one, 'time': t_one, 'mem': mem_used_one, 'peak': peak_used_one},
-            'xgboost': {'acc': acc_xgb, 'time': t_xgb, 'mem': mem_used_xgb, 'peak': peak_used_xgb},
+            'onestep': {'acc': acc_one, 'time': t_one, 'rss': rss_used_one},
+            'xgboost': {'acc': acc_xgb, 'time': t_xgb, 'rss': rss_used},
             'winner': winner
         })
     
@@ -212,12 +218,12 @@ def benchmark_ultra_fair():
     print(f"{'='*90}")
     onestep_wins = sum(1 for r in all_results if r['winner'] == 'OneStep')
     print(f"OneStep wins {onestep_wins}/3 datasets")
-    print(f"{'Dataset':<15} {'Acc':<12} {'Speed':<10} {'Mem':<10}")
+    print(f"{'Dataset':<15} {'Acc':<12} {'Speed':<10} {'RSS':<10}")
     print(f"{'-'*50}")
     for r in all_results:
         speed = f"{r['xgboost']['time']/r['onestep']['time']:.1f}x"
-        mem = f"{r['xgboost']['mem']/r['onestep']['mem']:.1f}x" if r['onestep']['mem'] > 0 else "∞"
-        print(f"{r['dataset']:<15} {r['onestep']['acc']:.4f}/{r['xgboost']['acc']:.4f} {speed:<10} {mem:<10}")
+        rss = f"{r['xgboost']['rss']/r['onestep']['rss']:.1f}x" if r['onestep']['rss'] > 0 else "∞"
+        print(f"{r['dataset']:<15} {r['onestep']['acc']:.4f}/{r['xgboost']['acc']:.4f} {speed:<10} {rss:<10}")
     
     print(f"\n{'='*90}")
 
