@@ -95,8 +95,9 @@ def scenario_1_streaming(chunks, all_classes):
              "eta": 0.3, "verbosity": 0},
             dtrain, num_boost_round=10
         )
-        xgb_acc = xgb_model.eval(dtest).split(':')[1]
-        xgb_acc = 1.0 - float(xgb_acc)  # Convert error to accuracy
+        # Fix: Use predict instead of eval for accuracy
+        xgb_pred = xgb_model.predict(dtest)
+        xgb_acc = accuracy_score(y_test, xgb_pred)
         xgb_time = time.time() - start
         
         results.append({
@@ -169,8 +170,8 @@ def scenario_2_batch(chunks, all_classes):
          "eta": 0.1, "verbosity": 0},
         dtrain, num_boost_round=50
     )
-    xgb_acc = xgb_model.eval(dtest).split(':')[1]
-    xgb_acc = 1.0 - float(xgb_acc)
+    xgb_pred = xgb_model.predict(dtest)
+    xgb_acc = accuracy_score(y_test, xgb_pred)
     xgb_time = time.time() - start
     
     print("\n📊 Results:")
@@ -215,7 +216,8 @@ def scenario_3_concept_drift(chunks, all_classes):
         {"objective": "multi:softmax", "num_class": 7, "verbosity": 0},
         dtrain, num_boost_round=30
     )
-    xgb_static = 1.0 - float(xgb_model.eval(dtest).split(':')[1])
+    xgb_pred = xgb_model.predict(dtest)
+    xgb_static = accuracy_score(y_test, xgb_pred)
     
     print(f"\n🔬 Testing on {len(X_test)} samples from chunks 6-10...")
     print(f"  SGD (static):     {sgd_static:.4f}")
