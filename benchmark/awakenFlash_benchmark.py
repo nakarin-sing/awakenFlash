@@ -1,24 +1,10 @@
-# Non-Logic v2: Fast Streaming + Non-Dualistic Reasoning
-# Optimized for speed (<2min) and high coherence (~0.88+ acc)
-# Requires: numpy, faiss-gpu, torch, scikit-learn
-
 import numpy as np
-import faiss
-import torch
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, f1_score
 
 # ========================
-# CONFIGURATION
-# ========================
-BATCH_SIZE = 2000     # mini-batch streaming
-TOP_K     = 10        # nearest neighbors in memory
-DEVICE    = "cuda" if torch.cuda.is_available() else "cpu"
-
-# ========================
 # DATA PREP (dummy example)
 # ========================
-# Replace these with your actual dataset
 X_train = np.random.rand(50000, 54).astype(np.float32)
 y_train = np.random.randint(0, 7, size=(50000,))
 X_test  = np.random.rand(10000, 54).astype(np.float32)
@@ -30,46 +16,40 @@ X_train = scaler.fit_transform(X_train).astype(np.float32)
 X_test  = scaler.transform(X_test).astype(np.float32)
 
 # ========================
-# FAISS MEMORY INDEX
+# NON-LOGIC v3: Mini-Batch Approximate NN
 # ========================
-dim = X_train.shape[1]
-index = faiss.IndexFlatL2(dim)
-if DEVICE=="cuda":
-    res = faiss.StandardGpuResources()
-    index = faiss.index_cpu_to_gpu(res, 0, index)
-index.add(X_train)
+BATCH_SIZE = 2000
+TOP_K = 10
+SAMPLE_SUBSET = 5000  # ใช้ subset ของ training สำหรับ approx
 
-# ========================
-# STREAMING PREDICTION
-# ========================
 preds = []
 
 for start in range(0, X_test.shape[0], BATCH_SIZE):
     end = start + BATCH_SIZE
     batch = X_test[start:end]
-    
-    # --- retrieve top-K neighbors ---
-    D, I = index.search(batch, TOP_K)
-    
-    # --- non-dualistic spike+graph reasoning ---
-    # Simple weighted voting
-    batch_pred = []
-    for neighbors in I:
-        neighbor_labels = y_train[neighbors]
-        weights = np.linspace(0.5,1.0,TOP_K)  # closer = higher weight
-        label_scores = np.zeros(np.max(y_train)+1)
-        for w, lbl in zip(weights, neighbor_labels):
-            label_scores[lbl] += w
-        batch_pred.append(np.argmax(label_scores))
-    preds.extend(batch_pred)
+
+    # --- Random subset of training data for fast approximate NN ---
+    idx_subset = np.random.choice(X_train.shape[0], SAMPLE_SUBSET, replace=False)
+    X_sub = X_train[idx_subset]
+    y_sub = y_train[idx_subset]
+
+    # --- Euclidean distance ---
+    dists = np.linalg.norm(X_sub[None,:,:] - batch[:,None,:], axis=2)  # shape (batch, subset)
+    neighbors = np.argsort(dists, axis=1)[:,:TOP_K]
+
+    # --- Weighted voting ---
+    for nbrs in neighbors:
+        lbls = y_sub[nbrs]
+        weights = np.linspace(0.5,1.0,TOP_K)
+        scores = np.zeros(np.max(y_train)+1)
+        for w,lbl in zip(weights, lbls):
+            scores[lbl] += w
+        preds.append(np.argmax(scores))
 
 preds = np.array(preds)
 
-# ========================
-# EVALUATION
-# ========================
 acc = accuracy_score(y_test, preds)
 f1  = f1_score(y_test, preds, average='macro')
 
-print("Non-Logic v2 Acc =", acc)
-print("Non-Logic v2 F1  =", f1)
+print("Non-Logic v3 (Fast) Acc =", acc)
+print("Non-Logic v3 (Fast) F1  =", f1)
