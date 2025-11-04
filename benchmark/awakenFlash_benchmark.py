@@ -21,6 +21,15 @@ import tracemalloc
 import warnings
 warnings.filterwarnings('ignore')
 
+# =========================
+# ✅ Ensure optional dependencies
+# =========================
+try:
+    import tabulate
+except ImportError:
+    os.system("pip install tabulate")
+    import tabulate
+
 
 class MemoryTracker:
     """Track memory usage"""
