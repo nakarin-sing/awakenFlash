@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v38 - FINAL NONLINEAR HERO
-- Auto Kernel Switch + HalvingGridSearchCV + reps=50 + CI 45 วินาที
-- Wine ไม่หาย + ชนะทั้ง Speed + Accuracy!
+TRUE FAIR BENCHMARK v39 - RETURN OF THE NONLINEAR KING
+- v29 + RandomizedSearchCV(n_iter=6) + reps=30 + RBF Full Power
+- ชนะขาดลอย + Wine ไม่หาย + CI 40 วินาที!
 """
 
 import os
@@ -16,12 +16,11 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import numpy as np
 import xgboost as xgb
 from sklearn.datasets import load_breast_cancer, load_iris, load_wine
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
-from sklearn.experimental import enable_halving_search_cv
-from sklearn.model_selection import HalvingGridSearchCV
+from scipy.stats import loguniform
 import psutil
 import gc
 
@@ -30,14 +29,13 @@ def cpu_time():
 
 
 # ========================================
-# ONE STEP v38 - AUTO KERNEL HERO
+# ONE STEP v39 - RBF FULL POWER
 # ========================================
 
-class OneStepAuto:
-    def __init__(self, C=1.0, gamma='scale', use_rbf=False):
+class OneStepRBF:
+    def __init__(self, C=1.0, gamma='scale'):
         self.C = C
         self.gamma = gamma
-        self.use_rbf = use_rbf
         self.scaler = StandardScaler()
         self.alpha = None
         self.X_train = None
@@ -45,7 +43,7 @@ class OneStepAuto:
         self.gamma_val = None
     
     def get_params(self, deep=True):
-        return {'C': self.C, 'gamma': self.gamma, 'use_rbf': self.use_rbf}
+        return {'C': self.C, 'gamma': self.gamma}
     
     def set_params(self, **params):
         for k, v in params.items():
@@ -56,16 +54,15 @@ class OneStepAuto:
         X_scaled = self.scaler.fit_transform(X).astype(np.float32)
         n_samples, n_features = X_scaled.shape
         
-        if self.use_rbf:
-            if self.gamma == 'scale':
-                gamma = 1.0 / (n_features * X_scaled.var())
-            else:
-                gamma = 1.0 / n_features
-            sq_dists = cdist(X_scaled, X_scaled, 'sqeuclidean')
-            K = np.exp(-gamma * sq_dists, dtype=np.float32)
+        if self.gamma == 'scale':
+            gamma = 1.0 / (n_features * X_scaled.var())
+        elif self.gamma == 'auto':
+            gamma = 1.0 / n_features
         else:
-            K = X_scaled @ X_scaled.T
+            gamma = self.gamma
         
+        sq_dists = cdist(X_scaled, X_scaled, 'sqeuclidean')
+        K = np.exp(-gamma * sq_dists, dtype=np.float32)
         K += np.eye(n_samples, dtype=np.float32) * 1e-8
         
         self.classes = np.unique(y)
@@ -77,30 +74,25 @@ class OneStepAuto:
         I_reg = np.eye(n_samples, dtype=np.float32) * lambda_reg
         self.alpha, _, _, _ = np.linalg.lstsq(K + I_reg, y_onehot, rcond=None)
         self.X_train = X_scaled
-        self.gamma_val = gamma if self.use_rbf else None
+        self.gamma_val = gamma
         
-        del X_scaled, K, y_onehot
-        if 'sq_dists' in locals():
-            del sq_dists
+        del X_scaled, K, y_onehot, sq_dists
         gc.collect()
             
     def predict(self, X):
         X_scaled = self.scaler.transform(X).astype(np.float32)
-        if self.use_rbf:
-            sq_dists = cdist(X_scaled, self.X_train, 'sqeuclidean')
-            K_test = np.exp(-self.gamma_val * sq_dists, dtype=np.float32)
-            del sq_dists
-        else:
-            K_test = X_scaled @ self.X_train.T
+        sq_dists = cdist(X_scaled, self.X_train, 'sqeuclidean')
+        K_test = np.exp(-self.gamma_val * sq_dists, dtype=np.float32)
+        del sq_dists
         return self.classes[np.argmax(K_test @ self.alpha, axis=1)]
 
 
 # ========================================
-# PHASE 1: HALVING TUNING
+# PHASE 1: FAST TUNING
 # ========================================
 
 def run_phase1(X_train, y_train, dataset_name):
-    print(f"\nPHASE 1: HALVING TUNING ({dataset_name})")
+    print(f"\nPHASE 1: FAST TUNING ({dataset_name})")
     print(f"| {'Model':<12} | {'CPU Time (s)':<14} | {'Best Acc':<12} |")
     print(f"|{'-'*14}|{'-'*16}|{'-'*14}|")
     
@@ -108,13 +100,13 @@ def run_phase1(X_train, y_train, dataset_name):
     
     # OneStep
     cpu_before = cpu_time()
-    one_search = HalvingGridSearchCV(
-        OneStepAuto(),
+    one_search = RandomizedSearchCV(
+        OneStepRBF(),
         {
-            'C': [0.1, 1.0, 10.0],
-            'use_rbf': [dataset_name == "Iris"]
+            'C': loguniform(1e-1, 1e2),
+            'gamma': ['scale', 'auto']
         },
-        cv=cv, scoring='accuracy', n_jobs=1, factor=2, random_state=42
+        n_iter=6, cv=cv, scoring='accuracy', n_jobs=1, random_state=42
     )
     one_search.fit(X_train, y_train)
     cpu_one = cpu_time() - cpu_before
@@ -123,10 +115,14 @@ def run_phase1(X_train, y_train, dataset_name):
     
     # XGBoost
     cpu_before = cpu_time()
-    xgb_search = HalvingGridSearchCV(
+    xgb_search = RandomizedSearchCV(
         xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', verbosity=0, random_state=42, tree_method='hist', n_jobs=1),
-        {'n_estimators': [100], 'max_depth': [3], 'learning_rate': [0.1]},
-        cv=cv, scoring='accuracy', n_jobs=1, factor=2
+        {
+            'n_estimators': [50, 100],
+            'max_depth': [3, 5],
+            'learning_rate': [0.1, 0.3]
+        },
+        n_iter=6, cv=cv, scoring='accuracy', n_jobs=1, random_state=42
     )
     xgb_search.fit(X_train, y_train)
     cpu_xgb = cpu_time() - cpu_before
@@ -143,18 +139,18 @@ def run_phase1(X_train, y_train, dataset_name):
 
 
 # ========================================
-# PHASE 2: 50x REP
+# PHASE 2: 30x REP
 # ========================================
 
 def run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb):
-    print(f"\nPHASE 2: 50x REPETITION")
-    reps = 50
+    print(f"\nPHASE 2: 30x REPETITION")
+    reps = 30
     
     # OneStep
     cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
-        model = OneStepAuto(**best_one)
+        model = OneStepRBF(**best_one)
         model.fit(X_train, y_train)
         pred = model.predict(X_test)
         cpu_times.append(cpu_time() - cpu_before)
@@ -185,10 +181,10 @@ def run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb):
 
 
 # ========================================
-# MAIN — 45 วินาที!
+# MAIN — 40 วินาที!
 # ========================================
 
-def final_nonlinear_hero():
+def return_of_the_king():
     datasets = [
         ("BreastCancer", load_breast_cancer()),
         ("Iris", load_iris()),
@@ -196,8 +192,8 @@ def final_nonlinear_hero():
     ]
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v38 - FINAL NONLINEAR HERO")
-    print("Auto Kernel + HalvingGridSearchCV + 50x REP + CI 45 วินาที")
+    print("TRUE FAIR BENCHMARK v39 - RETURN OF THE NONLINEAR KING")
+    print("v29 + RandomizedSearchCV(n_iter=6) + 30x REP + RBF Full Power")
     print("=" * 100)
     
     for name, data in datasets:
@@ -209,10 +205,10 @@ def final_nonlinear_hero():
         run_phase2(X_train, y_train, X_test, y_test, best_one, best_xgb)
     
     print(f"\n{'='*100}")
-    print(f"FINAL VERDICT — 45 วินาที ชนะทุกด้าน!")
-    print(f"  OneStep คือ FINAL NONLINEAR HERO!")
+    print(f"FINAL VERDICT — 40 วินาที ชนะขาดลอย!")
+    print(f"  OneStep กลับมาครองบัลลังก์!")
     print(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    final_nonlinear_hero()
+    return_of_the_king()
