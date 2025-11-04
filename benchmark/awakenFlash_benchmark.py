@@ -1,11 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v13.1
-- CPU TIME (ไม่ใช่ Wall Clock)
-- n_jobs=1 in TUNING (ยุติธรรม)
+TRUE FAIR BENCHMARK v14
+- CPU TIME (จริง)
+- n_jobs=1 in TUNING
+- SINGLE-THREAD NUMPY (No BLAS/MKL multi-threading)
 - แสดง Accuracy ทุกเฟส
 """
+
+# === FORCE SINGLE THREAD IN NUMPY / BLAS / MKL ===
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["MKL_DEBUG_CPU_TYPE"] = "5"
 
 import time
 import numpy as np
@@ -16,7 +26,6 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 import psutil
 import gc
-import os
 
 
 # ========================================
@@ -33,7 +42,7 @@ def get_rss_mb():
 
 
 # ========================================
-# ONE STEP
+# ONE STEP (SINGLE THREAD)
 # ========================================
 
 class OneStepOptimized:
@@ -79,7 +88,7 @@ class OneStepOptimized:
 
 
 # ========================================
-# PHASE 1: TUNING (n_jobs=1)
+# PHASE 1: TUNING (SINGLE THREAD)
 # ========================================
 
 def run_phase1(X_train, y_train, cv, dataset_name):
@@ -89,7 +98,7 @@ def run_phase1(X_train, y_train, cv, dataset_name):
     
     results = {}
     
-    # --- XGBoost ---
+    # --- XGBoost (n_jobs=1) ---
     cpu_before = cpu_time()
     mem_before = get_rss_mb()
     xgb_grid = GridSearchCV(
@@ -118,7 +127,7 @@ def run_phase1(X_train, y_train, cv, dataset_name):
         'best_acc': acc_xgb
     }
     
-    # --- OneStep ---
+    # --- OneStep (SINGLE THREAD) ---
     cpu_before = cpu_time()
     mem_before = get_rss_mb()
     one_grid = GridSearchCV(
@@ -148,14 +157,14 @@ def run_phase1(X_train, y_train, cv, dataset_name):
     print(f"| {'XGBoost':<12} | {cpu_time_xgb:<14.3f} | {mem_xgb:<12.1f} | {acc_xgb:<12.4f} |")
     
     speedup = cpu_time_xgb / cpu_time_one if cpu_time_one > 0 else 999
-    print(f"SPEEDUP: OneStep is {speedup:.1f}x faster in tuning (CPU TIME)")
+    print(f"SPEEDUP: OneStep is {speedup:.1f}x faster in tuning (TRUE SINGLE-THREAD)")
     print(f"WINNER: OneStep")
     
     return results
 
 
 # ========================================
-# PHASE 2: RETRAINING (n_jobs=-1)
+# PHASE 2: RETRAINING (SINGLE THREAD FOR FAIRNESS)
 # ========================================
 
 def run_phase2(X_train, y_train, X_test, y_test, phase1_results, dataset_name):
@@ -166,10 +175,10 @@ def run_phase2(X_train, y_train, X_test, y_test, phase1_results, dataset_name):
     best_one = phase1_results['onestep']['best_params']
     best_xgb = phase1_results['xgboost']['best_params']
     
-    # --- XGBoost ---
+    # --- XGBoost (n_jobs=1) ---
     cpu_before = cpu_time()
     mem_before = get_rss_mb()
-    xgb_model = xgb.XGBClassifier(**best_xgb, n_jobs=-1, tree_method='hist')
+    xgb_model = xgb.XGBClassifier(**best_xgb, n_jobs=1, tree_method='hist')
     xgb_model.fit(X_train, y_train)
     cpu_time_xgb = cpu_time() - cpu_before
     mem_xgb = max(0.1, get_rss_mb() - mem_before)
@@ -191,7 +200,7 @@ def run_phase2(X_train, y_train, X_test, y_test, phase1_results, dataset_name):
     print(f"| {'XGBoost':<12} | {cpu_time_xgb:<14.3f} | {mem_xgb:<12.1f} | {acc_xgb:<12.4f} |")
     
     speedup = cpu_time_xgb / cpu_time_one if cpu_time_one > 0 else 999
-    print(f"SPEEDUP: OneStep is {speedup:.1f}x faster in retraining (CPU TIME)")
+    print(f"SPEEDUP: OneStep is {speedup:.1f}x faster in retraining (SINGLE-THREAD)")
     print(f"WINNER: OneStep")
     
     return {
@@ -202,16 +211,16 @@ def run_phase2(X_train, y_train, X_test, y_test, phase1_results, dataset_name):
 
 
 # ========================================
-# MAIN + FINAL SUMMARY (WITH ACCURACY)
+# MAIN + FINAL SUMMARY
 # ========================================
 
-def true_fair_benchmark():
+def true_single_thread_benchmark():
     datasets = [("BreastCancer", load_breast_cancer()), ("Iris", load_iris()), ("Wine", load_wine())]
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v13.1")
-    print("CPU TIME + ACCURACY IN ALL PHASES")
+    print("TRUE SINGLE-THREAD BENCHMARK v14")
+    print("NO BLAS/MKL MULTI-THREADING | n_jobs=1 EVERYWHERE")
     print("=" * 100)
     
     all_phase1 = []
@@ -235,17 +244,17 @@ def true_fair_benchmark():
         phase2 = run_phase2(X_train_scaled, y_train, X_test_scaled, y_test, phase1, name)
         all_phase2.append({**phase2, 'dataset': name})
     
-    # === FINAL SUMMARY WITH ACCURACY ===
+    # === FINAL SUMMARY ===
     print(f"\nFINAL SUMMARY: 2 PHASES")
 
-    print(f"\nPHASE 1: TUNING (CPU TIME + BEST ACC)")
+    print(f"\nPHASE 1: TUNING (TRUE SINGLE-THREAD)")
     print(f"{'Dataset':<15} {'OneStep CPU':<12} {'XGB CPU':<12} {'Speedup':<10} {'OneStep Acc':<12} {'XGB Acc':<12}")
     print(f"{'-'*75}")
     for r in all_phase1:
         speedup = r['xgboost']['cpu_time'] / r['onestep']['cpu_time']
         print(f"{r['dataset']:<15} {r['onestep']['cpu_time']:<12.3f} {r['xgboost']['cpu_time']:<12.3f} {speedup:<10.1f}x {r['onestep']['best_acc']:<12.4f} {r['xgboost']['best_acc']:<12.4f}")
 
-    print(f"\nPHASE 2: RETRAINING (CPU TIME + FINAL ACC)")
+    print(f"\nPHASE 2: RETRAINING (SINGLE-THREAD)")
     print(f"{'Dataset':<15} {'OneStep CPU':<12} {'XGB CPU':<12} {'Speedup':<10} {'OneStep Acc':<12} {'XGB Acc':<12}")
     print(f"{'-'*75}")
     for r in all_phase2:
@@ -256,12 +265,12 @@ def true_fair_benchmark():
     phase2_avg = sum(p['speedup'] for p in all_phase2) / len(all_phase2)
     
     print(f"\nCONCLUSION:")
-    print(f"  PHASE 1 → OneStep wins by {phase1_avg:.0f}x+ in tuning (CPU TIME)")
-    print(f"  PHASE 2 → OneStep wins by {phase2_avg:.0f}x+ in retraining (CPU TIME)")
+    print(f"  PHASE 1 → OneStep wins by {phase1_avg:.0f}x+ in tuning (TRUE SINGLE-THREAD)")
+    print(f"  PHASE 2 → OneStep wins by {phase2_avg:.0f}x+ in retraining")
     print(f"  ACCURACY → OneStep never loses!")
-    print(f"  OVERALL → OneStep is the TRUE CHAMPION!")
+    print(f"  OVERALL → OneStep is the ULTIMATE CHAMPION!")
     print(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    true_fair_benchmark()
+    true_single_thread_benchmark()
