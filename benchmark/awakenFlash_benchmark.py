@@ -56,8 +56,8 @@ class OnlineOneStep:
         
     def _partial_fit_rls(self, X, y):
         """
-        Vectorized Recursive Least Squares update
-        Time complexity: O(d³) but with better constants than naive approach
+        Mini-batch RLS with Sherman-Morrison updates
+        Memory efficient: O(d²) storage, O(batch × d²) computation
         """
         X = X.astype(np.float32)
         n_samples = X.shape[0]
@@ -69,29 +69,37 @@ class OnlineOneStep:
         # Apply exponential forgetting: P = P / λ
         self.P = self.P / self.forgetting_factor
         
-        # Vectorized batch update using Woodbury identity
-        # P_new = (P^-1 + X^T X)^-1 = P - P X (I + X P X^T)^-1 X^T P
+        # Process in smaller mini-batches to avoid memory explosion
+        mini_batch_size = min(100, n_samples)
         
-        PX = self.P @ X.T  # (d, n)
-        XPX = X @ PX  # (n, n)
-        I_n = np.eye(n_samples, dtype=np.float32)
-        
-        try:
-            # Compute (I + XPX)^-1
-            inv_term = np.linalg.solve(I_n + XPX, X @ self.P)  # (n, d)
+        for start_idx in range(0, n_samples, mini_batch_size):
+            end_idx = min(start_idx + mini_batch_size, n_samples)
+            X_batch = X[start_idx:end_idx]
+            y_batch = y_onehot[start_idx:end_idx]
             
-            # Update P: P = P - PX (I + XPX)^-1 X^T P
-            self.P = self.P - PX @ inv_term
-            
-            # Update W: W = W + P X^T (y - X W)
-            prediction_error = y_onehot - X @ self.W  # (n, c)
-            self.W = self.W + PX @ prediction_error
-        except np.linalg.LinAlgError:
-            # Fallback to regularized version if singular
-            inv_term = np.linalg.solve(I_n + XPX + 1e-6 * I_n, X @ self.P)
-            self.P = self.P - PX @ inv_term
-            prediction_error = y_onehot - X @ self.W
-            self.W = self.W + PX @ prediction_error
+            # Sherman-Morrison updates for mini-batch
+            for i in range(X_batch.shape[0]):
+                x = X_batch[i:i+1].T  # (d, 1)
+                y_i = y_batch[i:i+1].T  # (c, 1)
+                
+                # Kalman gain: K = P x / (λ + x^T P x)
+                Px = self.P @ x  # (d, 1)
+                denom = self.forgetting_factor + (x.T @ Px)[0, 0]
+                
+                # Numerical stability check
+                if denom < 1e-10:
+                    continue
+                
+                K = Px / denom  # (d, 1)
+                
+                # Prediction error
+                pred_error = y_i.T - (x.T @ self.W)  # (1, c)
+                
+                # Update weights: W = W + K * error^T
+                self.W = self.W + K @ pred_error  # (d, c)
+                
+                # Update P: P = P - K K^T * (λ + x^T P x)
+                self.P = self.P - (K @ K.T) * denom  # (d, d)
     
     def partial_fit(self, X, y):
         """
@@ -295,9 +303,9 @@ def benchmark_streaming():
     online_onestep = OnlineOneStep(
         n_features=n_features,
         n_classes=n_classes,
-        forgetting_factor=0.98,  # Tuned for concept drift
-        reg_lambda=1e-2,
-        use_poly=True,  # Add polynomial features!
+        forgetting_factor=0.995,  # Less aggressive forgetting
+        reg_lambda=0.1,  # Stronger regularization for stability
+        use_poly=False,  # Disable poly for now - too many features
         poly_degree=2
     )
     
