@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v24.1 - BUG-FREE ENDGAME: FINAL ULTIMATE HERO
-- ทุก Bug แก้หมด + Hybrid Kernel + F1 + 5000x REP + 100% Fair
-- แก้ typo 'boost' → 'xgboost' แล้ว!
+TRUE FAIR BENCHMARK v24.2 - BUG-FREE ENDGAME: FINAL ULTIMATE HERO
+- ทุก Bug แก้หมด + แก้ early stopping + Hybrid Kernel + F1 + 5000x REP + 100% Fair
 """
 
 import os
@@ -29,7 +28,7 @@ def cpu_time():
 
 
 # ========================================
-# ONE STEP v24.1 - FINAL ULTIMATE HERO
+# ONE STEP v24.2 - FINAL ULTIMATE HERO
 # ========================================
 
 class OneStepUltimate:
@@ -106,6 +105,7 @@ def run_phase1(X_train, y_train, cv):
     print(f"| {'Model':<12} | {'CPU Time (s)':<14} | {'Best Acc':<12} |")
     print(f"|{'-'*14}|{'-'*16}|{'-'*14}|")
     
+    # --- OneStep ---
     cpu_before = cpu_time()
     one_grid = GridSearchCV(
         OneStepUltimate(),
@@ -122,11 +122,12 @@ def run_phase1(X_train, y_train, cv):
     best_one = one_grid.best_params_
     del one_grid; gc.collect()
     
+    # --- XGBoost (ลบ early_stopping_rounds) ---
     cpu_before = cpu_time()
     xgb_grid = GridSearchCV(
         xgb.XGBClassifier(
             use_label_encoder=False, eval_metric='mlogloss', verbosity=0,
-            random_state=42, tree_method='hist', n_jobs=1, early_stopping_rounds=10
+            random_state=42, tree_method='hist', n_jobs=1
         ),
         {'n_estimators': [50, 100], 'max_depth': [3, 5], 'learning_rate': [0.1, 0.3]},
         cv=cv, scoring='accuracy', n_jobs=1
@@ -155,6 +156,7 @@ def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
     print(f"\nPHASE 2: RETRAIN (5000x REPETITION)")
     reps = 5000
     
+    # OneStep
     cpu_times = []
     model_one = None
     for _ in range(reps):
@@ -167,6 +169,7 @@ def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
     acc_one = accuracy_score(y_test, pred_one)
     f1_one = f1_score(y_test, pred_one, average='weighted')
     
+    # XGBoost
     cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
@@ -189,7 +192,7 @@ def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
     print(f"SPEEDUP: OneStep {speedup:.1f}x faster | ACC WIN: {winner}")
     
     return {'onestep': {'cpu': cpu_one, 'acc': acc_one, 'f1': f1_one}, 
-            'xgboost': {'cpu': cpu_xgb, 'acc': acc_xgb, 'f1': f1_xgb}}  # แก้ตรงนี้!
+            'xgboost': {'cpu': cpu_xgb, 'acc': acc_xgb, 'f1': f1_xgb}}
 
 
 # ========================================
@@ -201,8 +204,8 @@ def ultimate_benchmark():
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v24.1 - BUG-FREE ENDGAME: FINAL ULTIMATE HERO")
-    print("ทุก Bug แก้หมด + แก้ typo + Hybrid Kernel + F1 + 5000x REP + 100% Fair")
+    print("TRUE FAIR BENCHMARK v24.2 - BUG-FREE ENDGAME: FINAL ULTIMATE HERO")
+    print("ทุก Bug แก้หมด + แก้ early stopping + Hybrid Kernel + F1 + 5000x REP + 100% Fair")
     print("=" * 100)
     
     for name, data in datasets:
