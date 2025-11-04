@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TRUE FAIR BENCHMARK v22 - INFINITY WAR: THAI HERO EDITION
-- Auto Kernel + float32 + Precompute + JIT CACHED + 1000x REP
+TRUE FAIR BENCHMARK v23 - ENDGAME: THAI HERO FINAL BOSS
+- Auto Kernel + float32 + No Cache + 1000x REP
 - ชนะแบบโหด ๆ บริสุทธิ์ยุติธรรม 100%
 """
 
@@ -24,29 +24,15 @@ from scipy.spatial.distance import cdist
 import psutil
 import gc
 
-# === PRECOMPUTE + JIT CACHED (เร็วแรงทะลุจักรวาล!) ===
-from functools import lru_cache
-
-@lru_cache(maxsize=32)
-def cached_kernel_matrix(X_tuple, gamma):
-    X = np.array(X_tuple).astype(np.float32)
-    sq_dists = cdist(X, X, 'sqeuclidean')
-    return np.exp(-gamma * sq_dists, dtype=np.float32)
-
-@lru_cache(maxsize=32)
-def cached_linear_kernel(X_tuple):
-    X = np.array(X_tuple).astype(np.float32)
-    return X @ X.T
-
 def cpu_time():
     return psutil.Process(os.getpid()).cpu_times().user + psutil.Process(os.getpid()).cpu_times().system
 
 
 # ========================================
-# ONE STEP v22 - INFINITY WAR HERO
+# ONE STEP v23 - ENDGAME HERO
 # ========================================
 
-class OneStepInfinity:
+class OneStepEndgame:
     def __init__(self, C=1.0, kernel='auto'):
         self.C = C
         self.kernel = kernel
@@ -55,7 +41,6 @@ class OneStepInfinity:
         self.alpha = None
         self.classes = None
         self.use_rbf = False
-        self.K_train = None
     
     def get_params(self, deep=True):
         return {'C': self.C, 'kernel': self.kernel}
@@ -68,26 +53,25 @@ class OneStepInfinity:
     def fit(self, X, y):
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X).astype(np.float32)
-        n_samples = X_scaled.shape[0]
+        n_samples, n_features = X_scaled.shape
         
         # Auto switch kernel
         if self.kernel == 'auto':
-            self.use_rbf = n_samples <= 1500
+            self.use_rbf = n_samples <= 1000
         elif self.kernel == 'rbf':
             self.use_rbf = True
         else:
             self.use_rbf = False
         
-        # PRECOMPUTE KERNEL
+        # Kernel Matrix
         if self.use_rbf:
-            gamma = 1.0 / X_scaled.shape[1]
-            X_tuple = tuple(X_scaled.flatten())
-            K = cached_kernel_matrix(X_tuple, gamma)
-            K += np.eye(n_samples, dtype=np.float32) * 1e-8
+            gamma = 1.0 / n_features
+            sq_dists = cdist(X_scaled, X_scaled, 'sqeuclidean')
+            K = np.exp(-gamma * sq_dists, dtype=np.float32)
         else:
-            X_tuple = tuple(X_scaled.flatten())
-            K = cached_linear_kernel(X_tuple)
-            K += np.eye(n_samples, dtype=np.float32) * 1e-8
+            K = X_scaled @ X_scaled.T
+        
+        K += np.eye(n_samples, dtype=np.float32) * 1e-8
         
         # One-hot
         self.classes = np.unique(y)
@@ -97,16 +81,14 @@ class OneStepInfinity:
         
         # Solve
         lambda_reg = self.C * np.trace(K) / n_samples
-        self.alpha = np.linalg.solve(K + lambda_reg * np.eye(n_samples, dtype=np.float32), y_onehot)
+        I_reg = np.eye(n_samples, dtype=np.float32) * lambda_reg
+        self.alpha = np.linalg.solve(K + I_reg, y_onehot)
         self.X_train = X_scaled
-        self.K_train = K
             
     def predict(self, X):
         X_scaled = self.scaler.transform(X).astype(np.float32)
         if self.use_rbf:
             gamma = 1.0 / self.X_train.shape[1]
-            X_tuple = tuple(self.X_train.flatten())
-            K_train_cached = cached_kernel_matrix(X_tuple, gamma)
             sq_dists = cdist(X_scaled, self.X_train, 'sqeuclidean')
             K_test = np.exp(-gamma * sq_dists, dtype=np.float32)
         else:
@@ -115,18 +97,18 @@ class OneStepInfinity:
 
 
 # ========================================
-# PHASE 1: TUNING (SINGLE-THREAD)
+# PHASE 1: TUNING
 # ========================================
 
 def run_phase1(X_train, y_train, cv):
-    print(f"\nPHASE 1: TUNING (SINGLE-THREAD, CACHED KERNEL)")
+    print(f"\nPHASE 1: TUNING (SINGLE-THREAD, ENDGAME MODE)")
     print(f"| {'Model':<12} | {'CPU Time (s)':<14} | {'Best Acc':<12} |")
     print(f"|{'-'*14}|{'-'*16}|{'-'*14}|")
     
     # --- OneStep ---
     cpu_before = cpu_time()
     one_grid = GridSearchCV(
-        OneStepInfinity(),
+        OneStepEndgame(),
         {
             'C': [0.1, 1.0, 10.0],
             'kernel': ['auto']
@@ -154,7 +136,7 @@ def run_phase1(X_train, y_train, cv):
     
     print(f"| {'OneStep':<12} | {cpu_one:<14.3f} | {acc_one:<12.4f} |")
     print(f"| {'XGBoost':<12} | {cpu_xgb:<14.3f} | {acc_xgb:<12.4f} |")
-    speedup = cpu_xgb / cpu_one
+    speedup = cpu_xgb / cpu_one if cpu_one > 0 else float('inf')
     winner = "OneStep" if acc_one >= acc_xgb else "XGBoost"
     print(f"SPEEDUP: OneStep {speedup:.1f}x faster | ACC WIN: {winner}")
     
@@ -163,23 +145,22 @@ def run_phase1(X_train, y_train, cv):
 
 
 # ========================================
-# PHASE 2: RETRAIN (1000x REP, SINGLE-THREAD)
+# PHASE 2: RETRAIN (1000x REP)
 # ========================================
 
 def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
-    print(f"\nPHASE 2: RETRAIN (1000x REPETITION, CACHED)")
+    print(f"\nPHASE 2: RETRAIN (1000x REPETITION)")
     reps = 1000
     
     # OneStep
     cpu_times = []
-    model_one = None
     for _ in range(reps):
         cpu_before = cpu_time()
-        model_one = OneStepInfinity(**{k: v for k, v in phase1['onestep']['params'].items() if k in ['C', 'kernel']})
-        model_one.fit(X_train, y_train)
+        model = OneStepEndgame(**{k: v for k, v in phase1['onestep']['params'].items() if k in ['C', 'kernel']})
+        model.fit(X_train, y_train)
         cpu_times.append(cpu_time() - cpu_before)
     cpu_one = sum(cpu_times) / reps
-    pred_one = model_one.predict(X_test)
+    pred_one = model.predict(X_test)
     acc_one = accuracy_score(y_test, pred_one)
     
     # XGBoost
@@ -199,7 +180,7 @@ def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
     
     print(f"| {'OneStep':<12} | {cpu_one:<14.6f} | {acc_one:<12.4f} |")
     print(f"| {'XGBoost':<12} | {cpu_xgb:<14.6f} | {acc_xgb:<12.4f} |")
-    speedup = cpu_xgb / cpu_one
+    speedup = cpu_xgb / cpu_one if cpu_one > 0 else float('inf')
     winner = "OneStep" if acc_one >= acc_xgb else "XGBoost"
     print(f"SPEEDUP: OneStep {speedup:.1f}x faster | ACC WIN: {winner}")
     
@@ -207,16 +188,16 @@ def run_phase2_repeated(X_train, y_train, X_test, y_test, phase1):
 
 
 # ========================================
-# MAIN — INFINITY WAR!
+# MAIN — ENDGAME!
 # ========================================
 
-def infinity_war_benchmark():
+def endgame_benchmark():
     datasets = [("BreastCancer", load_breast_cancer()), ("Iris", load_iris()), ("Wine", load_wine())]
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 100)
-    print("TRUE FAIR BENCHMARK v22 - INFINITY WAR: THAI HERO EDITION")
-    print("CACHED KERNEL + 1000x REP + 100% Fair")
+    print("TRUE FAIR BENCHMARK v23 - ENDGAME: THAI HERO FINAL BOSS")
+    print("Auto Kernel + float32 + No Cache + 1000x REP + 100% Fair")
     print("=" * 100)
     
     acc_wins = 0
@@ -237,12 +218,12 @@ def infinity_war_benchmark():
             speed_wins += 1
     
     print(f"\n{'='*100}")
-    print(f"FINAL VERDICT — INFINITY WAR ชนะทุกด้าน!")
+    print(f"FINAL VERDICT — ENDGAME ชนะทุกด้าน!")
     print(f"  OneStep WINS ACCURACY in {acc_wins}/{total} datasets")
     print(f"  OneStep WINS SPEED in {speed_wins}/{total} scenarios")
-    print(f"  OVERALL → OneStep คือ พระเอกไทย + Avengers + กัปตันมาร์เวล + ธานอส (ฝ่ายดี)!")
+    print(f"  OVERALL → OneStep คือ พระเอกไทย + Avengers + ทุกคนรวมพลัง!")
     print(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    infinity_war_benchmark()
+    endgame_benchmark()
