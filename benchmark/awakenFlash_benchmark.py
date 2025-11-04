@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 ULTRA-FAIR BENCHMARK: OneStep vs XGBoost
-Fixed ALL bugs:
-  - Memory: psutil (not tracemalloc)
-  - Predict before del
+ALL BUGS FIXED:
+  - Memory: psutil
+  - Predict BEFORE del
+  - Save best_params BEFORE del
   - No poly in XGBoost
-  - n_jobs=1 for both
-  - float64 precision
-  - Ridge + lstsq for stability
-  - StratifiedKFold with seed
-  - gc.collect() after del
+  - n_jobs=1 both
+  - float64 + Ridge
+  - StratifiedKFold + seed
 """
 
 import time
@@ -29,7 +28,7 @@ import gc
 
 
 # ========================================
-# ONE STEP OPTIMIZED (ใช้ Ridge + float64)
+# ONE STEP OPTIMIZED
 # ========================================
 
 class OneStepOptimized:
@@ -57,23 +56,16 @@ class OneStepOptimized:
         X = X.astype(np.float64)
         self.n_classes = len(np.unique(y))
         
-        # Polynomial features
         if self.use_poly:
-            self.poly = PolynomialFeatures(
-                degree=self.poly_degree, include_bias=True
-            )
+            self.poly = PolynomialFeatures(degree=self.poly_degree, include_bias=True)
             X_feat = self.poly.fit_transform(X)
         else:
             X_feat = np.hstack([np.ones((X.shape[0], 1), dtype=np.float64), X])
         
-        # One-hot encode
         y_onehot = np.eye(self.n_classes, dtype=np.float64)[y]
-        
-        # Adaptive regularization
         trace = np.trace(X_feat.T @ X_feat)
         alpha = self.C * trace / X_feat.shape[1] if X_feat.shape[1] > 0 else self.C
         
-        # Use Ridge (stable, handles multicollinearity)
         self.clf = Ridge(alpha=alpha, solver='svd')
         self.clf.fit(X_feat, y_onehot)
             
@@ -88,16 +80,15 @@ class OneStepOptimized:
 
 
 # ========================================
-# MEMORY HELPER
+# MEMORY
 # ========================================
 
 def get_memory_mb():
-    """Return current RSS memory in MB"""
     return psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
 
 
 # ========================================
-# ULTRA-FAIR BENCHMARK
+# BENCHMARK
 # ========================================
 
 def benchmark_ultra_fair():
@@ -107,12 +98,11 @@ def benchmark_ultra_fair():
         ("Wine", load_wine())
     ]
     
-    # Fixed CV for reproducibility
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     
     print("=" * 90)
     print("ULTRA-FAIR BENCHMARK: OneStep vs XGBoost")
-    print("Fixed: Memory, Predict->del, No poly in XGBoost, n_jobs=1, float64, Ridge")
+    print("ALL BUGS FIXED: Memory, del, best_params, fairness")
     print("=" * 90)
     
     all_results = []
@@ -123,13 +113,10 @@ def benchmark_ultra_fair():
         print(f"{'='*90}")
         
         X, y = data.data, data.target
-        
-        # Stratified split
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
         
-        # Same scaler
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
@@ -137,7 +124,7 @@ def benchmark_ultra_fair():
         results = {}
         
         # =================================================================
-        # 1. XGBoost: NO poly, n_jobs=1, CPU only
+        # 1. XGBoost
         # =================================================================
         print("\n[1/2] XGBoost (no poly, n_jobs=1, CPU only)...")
         mem_before = get_memory_mb()
@@ -149,7 +136,7 @@ def benchmark_ultra_fair():
                 eval_metric='logloss',
                 verbosity=0,
                 random_state=42,
-                tree_method='hist',  # CPU only
+                tree_method='hist',
                 n_jobs=1
             ),
             param_grid={
@@ -165,12 +152,15 @@ def benchmark_ultra_fair():
         t_xgb = time.time() - t0
         mem_used_xgb = get_memory_mb() - mem_before
         
-        # Predict BEFORE delete
+        # เก็บ best_params ก่อน del
+        best_params_xgb = xgb_grid.best_params_
+        
+        # Predict ก่อน del
         pred_xgb = xgb_grid.predict(X_test_scaled)
         acc_xgb = accuracy_score(y_test, pred_xgb)
         f1_xgb = f1_score(y_test, pred_xgb, average='weighted')
         
-        # Now safe to delete
+        # ค่อย del
         del xgb_grid
         gc.collect()
         
@@ -179,15 +169,15 @@ def benchmark_ultra_fair():
             'f1': f1_xgb,
             'time': t_xgb,
             'memory_mb': mem_used_xgb,
-            'best_params': xgb_grid.best_params_ if 'xgb_grid' in locals() else "N/A"
+            'best_params': best_params_xgb
         }
         
         print(f"XGBoost → Acc: {acc_xgb:.4f} | F1: {f1_xgb:.4f} | "
               f"Time: {t_xgb:.3f}s | Mem: {mem_used_xgb:.1f} MB")
-        print(f"  Best: {xgb_grid.best_params_}")
+        print(f"  Best: {best_params_xgb}")
         
         # =================================================================
-        # 2. OneStep: with poly, float64, Ridge
+        # 2. OneStep
         # =================================================================
         print("\n[2/2] OneStep (with poly, float64, Ridge)...")
         mem_before = get_memory_mb()
@@ -208,12 +198,15 @@ def benchmark_ultra_fair():
         t_one = time.time() - t0
         mem_used_one = get_memory_mb() - mem_before
         
-        # Predict BEFORE delete
+        # เก็บ best_params ก่อน del
+        best_params_one = onestep_grid.best_params_
+        
+        # Predict ก่อน del
         pred_one = onestep_grid.predict(X_test_scaled)
         acc_one = accuracy_score(y_test, pred_one)
         f1_one = f1_score(y_test, pred_one, average='weighted')
         
-        # Now delete
+        # ค่อย del
         del onestep_grid
         gc.collect()
         
@@ -222,12 +215,12 @@ def benchmark_ultra_fair():
             'f1': f1_one,
             'time': t_one,
             'memory_mb': mem_used_one,
-            'best_params': onestep_grid.best_params_ if 'onestep_grid' in locals() else "N/A"
+            'best_params': best_params_one
         }
         
         print(f"OneStep → Acc: {acc_one:.4f} | F1: {f1_one:.4f} | "
               f"Time: {t_one:.3f}s | Mem: {mem_used_one:.1f} MB")
-        print(f"  Best: {onestep_grid.best_params_}")
+        print(f"  Best: {best_params_one}")
         
         # =================================================================
         # COMPARISON
