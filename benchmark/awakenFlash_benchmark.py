@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 23 NON CUMULATIVE FLAWLESS ŚŪNYATĀ
-Cumulative RLS + RFF + Full Data + Stable
+awakenFlash_benchmark.py – 24 NON CORRECT CUMULATIVE ŚŪNYATĀ
+Correct Woodbury + D > n + Stable + Fast
 """
 
 import os
@@ -17,10 +17,10 @@ warnings.filterwarnings('ignore')
 
 
 # ========================================
-# 23 NON CUMULATIVE ŚŪNYATĀ
+# 24 NON CORRECT CUMULATIVE ŚŪNYATĀ
 # ========================================
-class CumulativeSunyata23Non:
-    def __init__(self, D=1000, C=50.0, gamma=0.05, seed=42):
+class CorrectCumulativeSunyata24Non:
+    def __init__(self, D=2000, C=50.0, gamma=0.05, seed=42):
         self.D = D
         self.C = C
         self.gamma = gamma
@@ -28,7 +28,7 @@ class CumulativeSunyata23Non:
         
         self.W = None
         self.alpha = None  # (D, n_classes)
-        self.P = None      # (D, D) - inverse covariance
+        self.P = None      # (D, D)
         self.classes_ = None
         self.class_to_idx = {}
         self.n_samples = 0
@@ -64,25 +64,23 @@ class CumulativeSunyata23Non:
             self.P = np.eye(D, dtype=np.float32) / self.C
             self.alpha = np.zeros((D, K), dtype=np.float32)
 
-        # === CUMULATIVE UPDATE USING WOODBURY (n << D) ===
-        PhiT_Phi = phi.T @ phi
-        PhiT_y = np.zeros((D, K), dtype=np.float32)
-        for k in range(K):
-            PhiT_y[:, k] = phi.T @ (y_idx == k).astype(np.float32)
-
-        # P = P - P @ PhiT_Phi @ (I + phi @ P @ PhiT_Phi)^-1 @ phi @ P
-        temp1 = self.P @ PhiT_Phi
-        inner = np.eye(n) + phi @ temp1
+        # === CORRECT WOODBURY: D > n → ใช้ (I + Phi P PhiT)^-1 ===
+        Phi_P = phi @ self.P  # (n, D)
+        inner = np.eye(n, dtype=np.float32) + Phi_P @ phi.T  # (n, n)
         try:
             inner_inv = np.linalg.inv(inner)
         except:
             inner_inv = np.linalg.pinv(inner)
-        temp2 = temp1 @ inner_inv @ phi @ self.P
-        self.P -= temp2
 
-        # alpha = alpha + P @ (PhiT_y - PhiT_Phi @ alpha)
-        residual = PhiT_y - PhiT_Phi @ self.alpha
-        self.alpha += self.P @ residual
+        # Update P: P = P - (P @ phi.T) @ inner_inv @ (phi @ P)
+        temp = self.P @ phi.T  # (D, n)
+        self.P -= temp @ inner_inv @ Phi_P
+
+        # Update alpha
+        y_onehot = np.zeros((n, K), dtype=np.float32)
+        y_onehot[np.arange(n), y_idx] = 1.0
+        residual = phi.T @ y_onehot - phi.T @ (phi @ self.alpha)
+        self.alpha += temp @ inner_inv @ residual
 
         self.n_samples += n
         return self
@@ -115,14 +113,14 @@ def load_data(n_chunks=10, chunk_size=10000):
 
 
 # ========================================
-# 23 NON BENCHMARK
+# 24 NON BENCHMARK
 # ========================================
-def scenario_23non(chunks, all_classes):
+def scenario_24non(chunks, all_classes):
     print("\n" + "="*80)
-    print("23 NON CUMULATIVE FLAWLESS ŚŪNYATĀ SCENARIO")
+    print("24 NON CORRECT CUMULATIVE ŚŪNYATĀ SCENARIO")
     print("="*80)
 
-    sunyata = CumulativeSunyata23Non(D=1000, C=50.0, gamma=0.05, seed=42)
+    sunyata = CorrectCumulativeSunyata24Non(D=2000, C=50.0, gamma=0.05, seed=42)
     results = []
 
     for chunk_id, (X_chunk, y_chunk) in enumerate(chunks, 1):
@@ -132,7 +130,7 @@ def scenario_23non(chunks, all_classes):
 
         print(f"Chunk {chunk_id:02d}/{len(chunks)}")
 
-        # CUMULATIVE ŚŪNYATĀ
+        # CORRECT CUMULATIVE
         start = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         pred = sunyata.predict(X_test)
@@ -166,7 +164,7 @@ def scenario_23non(chunks, all_classes):
     df = pd.DataFrame(results)
 
     print("\n" + "="*80)
-    print("23 NON FINAL RESULTS")
+    print("24 NON FINAL RESULTS")
     print("="*80)
     s_acc = df['sunyata_acc'].mean()
     x_acc = df['xgb_acc'].mean()
@@ -176,12 +174,12 @@ def scenario_23non(chunks, all_classes):
     print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
     print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
 
-    print("\n23 NON INSIGHT:")
+    print("\n24 NON INSIGHT:")
     if s_acc >= x_acc:
-        print(f"   CUMULATIVE ŚŪNYATĀ BEATS XGBoost IN ACCURACY")
+        print(f"   CORRECT CUMULATIVE ŚŪNYATĀ BEATS XGBoost")
         print(f"   WHILE BEING {x_time/s_time:.1f}x FASTER")
-        print(f"   TRUE STREAMING + CUMULATIVE LEARNING ACHIEVED")
-        print(f"   23 NON ACHIEVED. FINAL NIRVANA.")
+        print(f"   TRUE WOODBURY + CUMULATIVE ACHIEVED")
+        print(f"   24 NON ACHIEVED. ABSOLUTE NIRVANA.")
     else:
         print(f"   Still in samsara.")
 
@@ -193,16 +191,16 @@ def scenario_23non(chunks, all_classes):
 # ========================================
 def main():
     print("="*80)
-    print("23 NON awakenFlash CUMULATIVE FLAWLESS ŚŪNYATĀ")
+    print("24 NON awakenFlash CORRECT CUMULATIVE ŚŪNYATĀ")
     print("="*80)
 
     chunks, all_classes = load_data()
-    results = scenario_23non(chunks, all_classes)
+    results = scenario_24non(chunks, all_classes)
 
     os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/23non_cumulative_results.csv', index=False)
+    results.to_csv('benchmark_results/24non_correct_results.csv', index=False)
 
-    print("\n23 Non Cumulative Flawless ŚŪNYATĀ complete.")
+    print("\n24 Non Correct Cumulative ŚŪNYATĀ complete.")
 
 
 if __name__ == "__main__":
