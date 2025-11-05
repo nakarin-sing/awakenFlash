@@ -1,276 +1,322 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark_v2_nonlogic.py
-awakenFlash + Non-Logic Optimizer Core (streaming adaptive blend)
-- streaming chunks
-- Sunyata (RFF + ridge) as fast online learner
-- XGBoost as teacher / strong baseline
-- NonLogicOptimizer: adapt blend weights, detect drift, temperature scaling
+awakenFlash_anlk_benchmark.py
+Prototype: Adaptive Non-Logic Kernel (ANLK) streaming benchmark vs XGBoost
+Author: generated
 """
 
 import os
 import time
+import math
+import tracemalloc
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import roc_auc_score
+from sklearn.utils import shuffle
 import xgboost as xgb
 import warnings
-warnings.filterwarnings("ignore")
-
+warnings.filterwarnings('ignore')
 
 # ---------------------------
-# Lightweight Sunyata model (RFF + ridge)
+# Utility functions
 # ---------------------------
-class FastSunyata:
-    def __init__(self, D=512, ridge=1.0, gamma=0.1, rng_seed=42):
+def load_covtype(n_chunks=10, chunk_size=5000, random_state=42):
+    """Load UCI covtype (downloaded live). Keep it simple and chunked."""
+    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
+    print("Loading dataset (this may take a bit)...")
+    df = pd.read_csv(url, header=None, nrows=n_chunks * chunk_size)
+    X = df.iloc[:, :-1].values.astype(np.float32)
+    y = (df.iloc[:, -1].values - 1).astype(np.int32)  # 0-based classes
+    X, y = shuffle(X, y, random_state=random_state)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+    chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, len(X), chunk_size)]
+    return chunks[:n_chunks], np.unique(y)
+
+def entropy_of_probs(probs):
+    # probs: (n_samples, n_classes)
+    p = np.clip(probs, 1e-12, 1.0)
+    ent = -np.sum(p * np.log(p), axis=1)
+    return ent.mean()
+
+def model_memory_snapshot():
+    current, peak = tracemalloc.get_traced_memory()
+    return current/1024/1024, peak/1024/1024
+
+# ---------------------------
+# AwakenFlash: ANLK streaming model
+# ---------------------------
+class AwakenFlashANLK:
+    """
+    Adaptive Non-Logic Kernel (ANLK) prototype.
+    - lightweight RFF + ridge solving per chunk (fast)
+    - meta-weight w_t adapts using delta_acc, entropy, drift
+    - returns class predictions
+    """
+    def __init__(self, D=512, ridge=10.0, forgetting=0.98, seed=0):
         self.D = int(D)
         self.ridge = float(ridge)
-        self.gamma = float(gamma)
-        self.rng = np.random.default_rng(rng_seed)
-        self.W = None
-        self.alpha = None
+        self.forgetting = float(forgetting)
+        self.rng = np.random.default_rng(seed)
+        self.W = None  # RFF projection
+        self.alpha = None  # (D, K)
         self.classes_ = None
+        self.class_to_idx = {}
+        self.prev_acc = None
+        self.prev_chunk_mean = None
+        self.w = 0.5  # blend weight (0..1): 1 -> fully nonlogic, 0 -> fallback linear
+        # meta params
+        self.alpha_meta = 3.0
+        self.beta_meta = 1.0
+        self.gamma_meta = 2.0
 
     def _ensure_W(self, n_features):
-        if self.W is None:
-            rows = self.D // 2
-            self.W = self.rng.normal(0, np.sqrt(self.gamma), (rows, n_features)).astype(np.float32)
+        half = self.D // 2
+        if self.W is None or self.W.shape[1] != n_features:
+            scale = 1.0 / math.sqrt(max(1, n_features))
+            self.W = self.rng.normal(0, scale, (half, n_features)).astype(np.float32)
 
     def _rff(self, X):
         self._ensure_W(X.shape[1])
-        proj = X @ self.W.T  # (n, D/2)
-        phi = np.hstack([np.cos(proj), np.sin(proj)]) * np.sqrt(2.0 / self.D)
-        return phi.astype(np.float32)
+        proj = X.astype(np.float32) @ self.W.T
+        phi = np.hstack([np.cos(proj), np.sin(proj)]) * math.sqrt(2.0 / self.D)
+        return phi  # (n, D)
 
-    def partial_fit(self, X, y, classes=None):
-        Xf = X.astype(np.float32)
-        phi = self._rff(Xf)
-        if classes is not None:
-            self.classes_ = np.array(classes)
+    def _encode(self, y):
         if self.classes_ is None:
             self.classes_ = np.unique(y)
+            self.class_to_idx = {c:i for i,c in enumerate(self.classes_)}
+        return np.array([self.class_to_idx[v] for v in y], dtype=np.int32)
+
+    def _update_meta_weight(self, delta_acc, entropy, drift):
+        # logistic/sigmoid rule: w ← sigmoid(α*Δacc + β*entropy - γ*drift)
+        val = self.alpha_meta * (delta_acc if delta_acc is not None else 0.0) + \
+              self.beta_meta * (entropy) - \
+              self.gamma_meta * (drift)
+        w_new = 1.0 / (1.0 + math.exp(-val))
+        # smooth update
+        self.w = 0.85 * self.w + 0.15 * w_new
+        # clamp
+        self.w = float(min(0.99, max(0.01, self.w)))
+
+    def partial_fit(self, X, y, classes=None):
+        if classes is not None:
+            self.classes_ = classes
+            self.class_to_idx = {c:i for i,c in enumerate(classes)}
         K = len(self.classes_)
-        n = phi.shape[0]
-        y_idx = np.searchsorted(self.classes_, y)
-        Y = np.zeros((n, K), dtype=np.float32)
-        Y[np.arange(n), y_idx] = 1.0
 
-        # closed-form ridge for multi-output
-        PhiTPhi = (phi.T @ phi) / max(1, n)
-        PhiTy = (phi.T @ Y) / max(1, n)
-        H = PhiTPhi + np.eye(PhiTPhi.shape[0], dtype=np.float32) * (self.ridge / max(1, n))
-        try:
-            self.alpha = np.linalg.solve(H + 1e-6*np.eye(H.shape[0]), PhiTy)
-        except np.linalg.LinAlgError:
-            self.alpha = np.linalg.pinv(H + 1e-6*np.eye(H.shape[0])) @ PhiTy
+        phi = self._rff(X)  # (n,D)
+        y_idx = self._encode(y)
+        n, D = phi.shape
 
-    def predict_proba(self, X):
+        # compute simple teacher probs from current linear model (if exists) for entropy
+        if self.alpha is not None:
+            scores = phi @ self.alpha  # (n, K)
+            # softmax
+            exps = np.exp(scores - scores.max(axis=1, keepdims=True))
+            probs = exps / exps.sum(axis=1, keepdims=True)
+            ent = entropy_of_probs(probs)
+        else:
+            ent = math.log(max(2, K))  # maximal initial entropy proxy
+
+        # compute drift: distance between current chunk mean and prev chunk mean (feature-wise)
+        cur_mean = X.mean(axis=0)
+        if self.prev_chunk_mean is None:
+            drift = 0.0
+        else:
+            drift = float(np.linalg.norm(cur_mean - self.prev_chunk_mean) / (np.linalg.norm(self.prev_chunk_mean)+1e-9))
+        self.prev_chunk_mean = cur_mean.copy()
+
+        # delta_acc: if we have prev_acc
+        delta_acc = None
+        # We'll compute delta_acc after predict() externally; here update meta with None or 0
+
+        # Prepare one-hot
+        y_onehot = np.zeros((n, K), dtype=np.float32)
+        y_onehot[np.arange(n), y_idx] = 1.0
+
+        # RLS-like solve with forgetting
+        PhiT_Phi = (phi.T @ phi) / max(1, n)
+        PhiT_y = (phi.T @ y_onehot) / max(1, n)
+        ridge = self.ridge / max(1, n)
+        H = PhiT_Phi + np.eye(D, dtype=np.float32) * ridge
+
         if self.alpha is None:
-            # uniform fallback
-            n = X.shape[0]
-            K = len(self.classes_) if self.classes_ is not None else 1
-            return np.ones((n, K), dtype=np.float32) / max(1, K)
-        phi = self._rff(X.astype(np.float32))
-        scores = phi @ self.alpha  # (n, K)
-        # softmax stable
-        logits = scores - scores.max(axis=1, keepdims=True)
-        exp = np.exp(np.clip(logits, -50, 50))
-        probs = exp / (exp.sum(axis=1, keepdims=True) + 1e-12)
-        return probs
+            # initialization
+            self.alpha = np.linalg.solve(H + 1e-6*np.eye(D), PhiT_y)
+        else:
+            # blend with forgetting to simulate continual update
+            rhs = PhiT_y + self.forgetting * self.alpha
+            try:
+                self.alpha = np.linalg.solve(H + 1e-6*np.eye(D), rhs)
+            except np.linalg.LinAlgError:
+                self.alpha = np.linalg.pinv(H + 1e-6*np.eye(D)) @ rhs
+
+        # return entropy and drift for meta update
+        return ent, drift
 
     def predict(self, X):
-        probs = self.predict_proba(X)
-        idx = np.argmax(probs, axis=1)
-        return self.classes_[idx]
-
-
-# ---------------------------
-# Non-Logic Optimizer Core
-# - maintains blend weight between Sunyata and XGB
-# - detects drift by comparing short-term acc vs long-term acc
-# - adjusts temperature and teacher weight
-# ---------------------------
-class NonLogicOptimizer:
-    def __init__(self, init_blend=0.5, lr=0.12, drift_window=3):
-        self.blend = float(init_blend)  # weight for Sunyata (0..1), final prediction = blend * sun + (1-blend) * xgb
-        self.lr = float(lr)
-        self.drift_window = int(drift_window)
-        self.history = []  # keep last few (s_acc, x_acc)
-        self.ema_s_acc = None
-        self.ema_x_acc = None
-        self.ema_alpha = 0.2
-
-        # temperature for soft labels mixing
-        self.temp = 2.0
-        self.teacher_soft_weight = 0.25
-
-    def update(self, sun_acc, xgb_acc):
-        # update EMA
-        if self.ema_s_acc is None:
-            self.ema_s_acc = sun_acc
-            self.ema_x_acc = xgb_acc
-        else:
-            self.ema_s_acc = self.ema_alpha * sun_acc + (1 - self.ema_alpha) * self.ema_s_acc
-            self.ema_x_acc = self.ema_alpha * xgb_acc + (1 - self.ema_alpha) * self.ema_x_acc
-
-        # push history
-        self.history.append((sun_acc, xgb_acc))
-        if len(self.history) > 50:
-            self.history.pop(0)
-
-        # simple drift detection: if recent drop in xgb but sun stays stable -> increase blend
-        last_k = self.history[-self.drift_window:]
-        if len(last_k) >= self.drift_window:
-            s_mean = np.mean([s for s, _ in last_k])
-            x_mean = np.mean([x for _, x in last_k])
-            # if xgb degraded relatively to sunyata -> move blend towards sunyata
-            diff = (s_mean - x_mean)
-            # adjust more conservatively when diff small
-            adapt = np.tanh(diff * 5.0) * self.lr
-            self.blend = np.clip(self.blend + adapt, 0.0, 1.0)
-
-        # baseline: if sun_acc > xgb_acc for long-term EMA -> favor sunyata
-        delta = self.ema_s_acc - self.ema_x_acc
-        self.blend = np.clip(self.blend + np.sign(delta) * self.lr * (abs(delta) ** 0.7), 0.0, 1.0)
-
-        # adapt temperature and teacher weight modestly
-        if self.blend > 0.7:
-            self.temp = max(1.0, self.temp * 0.96)
-            self.teacher_soft_weight = max(0.05, self.teacher_soft_weight * 0.95)
-        elif self.blend < 0.3:
-            self.temp = min(5.0, self.temp * 1.03)
-            self.teacher_soft_weight = min(0.6, self.teacher_soft_weight * 1.05)
-
-    def get_blend(self):
-        return float(self.blend)
-
-    def get_teacher_weight(self):
-        return float(self.teacher_soft_weight)
-
-    def get_temp(self):
-        return float(self.temp)
-
+        if self.alpha is None:
+            # bootstrap: random predicts (rare)
+            return np.zeros(len(X), dtype=self.classes_.dtype)
+        phi = self._rff(X)
+        scores = phi @ self.alpha  # (n,K)
+        pred_idx = np.argmax(scores, axis=1)
+        return self.classes_[pred_idx]
 
 # ---------------------------
-# Utilities: soft blending of probability vectors
+# Benchmark runner
 # ---------------------------
-def blend_probs(p_sun, p_xgb, blend):
-    # p_sun, p_xgb shape (n, K)
-    w = np.clip(blend, 0.0, 1.0)
-    return w * p_sun + (1 - w) * p_xgb
+def compute_adaptivity_stream(score_series, window=3):
+    # rough adaptivity proxy: how quickly accuracy recovers after drops
+    # find local drops and measure recovery within window chunks
+    s = np.asarray(score_series)
+    drops = []
+    for i in range(1, len(s)):
+        if s[i] < s[i-1] - 0.02:  # dropped more than 2%
+            # find next index within window where s >= previous level
+            recovered = False
+            for j in range(i+1, min(len(s), i+1+window)):
+                if s[j] >= s[i-1]:
+                    drops.append((i, j, (j - i)))
+                    recovered = True
+                    break
+            if not recovered:
+                drops.append((i, None, None))
+    if not drops:
+        return 1.0  # no drops -> very adaptive (or stable)
+    # adaptivity score: inverse of avg recovery time (normalized)
+    times = [d[2] for d in drops if d[2] is not None]
+    if not times:
+        return 0.2
+    avg = np.mean(times)
+    return max(0.0, 1.0 - avg/(window+1))
 
+def run_benchmark(n_chunks=10, chunk_size=5000, random_state=42, out_dir='benchmark_results'):
+    os.makedirs(out_dir, exist_ok=True)
+    tracemalloc.start()
 
-# ---------------------------
-# Load data (covtype streaming chunks)
-# ---------------------------
-def load_data(n_chunks=10, chunk_size=4000, random_state=42):
-    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-    print("Loading data (this may take a while)...")
-    df = pd.read_csv(url, header=None, nrows=n_chunks * chunk_size)
-    X = df.iloc[:, :-1].values.astype(np.float32)
-    y = (df.iloc[:, -1].values - 1).astype(int)
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X).astype(np.float32)
-    chunks = [(X[i:i+chunk_size], y[i:i+chunk_size]) for i in range(0, len(X), chunk_size)]
-    classes = np.unique(y)
-    return chunks[:n_chunks], classes
+    # load chunks
+    chunks, classes = load_covtype(n_chunks=n_chunks, chunk_size=chunk_size, random_state=random_state)
 
-
-# ---------------------------
-# Streaming benchmark using optimizer
-# ---------------------------
-def scenario_streaming_nonlogic(chunks, classes):
-    sunyata = FastSunyata(D=512, ridge=10.0, gamma=0.05)
-    optimizer = NonLogicOptimizer(init_blend=0.5, lr=0.12, drift_window=3)
-
+    # models
+    sun = AwakenFlashANLK(D=512, ridge=20.0, forgetting=0.97, seed=random_state)
+    xgb_params = {"objective":"multi:softmax", "num_class": len(classes), "max_depth":4, "eta":0.2, "verbosity":0}
     results = []
-    xgb_window_X = []
-    xgb_window_y = []
-    X_window_size = 3  # number of chunks kept for xgb train to simulate streaming teacher
 
-    for i, (X_chunk, y_chunk) in enumerate(chunks, 1):
-        n = X_chunk.shape[0]
-        split = int(0.8 * n)
+    # For blend baseline (simple blend of SUN and XGB)
+    blend_weights = []
+
+    sun_prev_acc = None
+    for cid, (X_chunk, y_chunk) in enumerate(chunks, 1):
+        split = int(0.8 * len(X_chunk))
         X_train, X_test = X_chunk[:split], X_chunk[split:]
         y_train, y_test = y_chunk[:split], y_chunk[split:]
 
-        # update sunyata quickly
-        sunyata.partial_fit(X_train, y_train, classes=classes)
-        p_sun = sunyata.predict_proba(X_test)
-        pred_s = np.argmax(p_sun, axis=1)
-        s_acc = accuracy_score(y_test, pred_s)
+        # 1) AwakenFlash partial_fit (streaming)
+        t0 = time.time()
+        ent, drift = sun.partial_fit(X_train, y_train, classes=classes)
+        pred_s = sun.predict(X_test)
+        t_s = time.time() - t0
+        acc_s = accuracy_score(y_test, pred_s)
+        f1_s = f1_score(y_test, pred_s, average='weighted')
 
-        # build/maintain a small xgb teacher on recent chunks
-        xgb_window_X.append(X_train)
-        xgb_window_y.append(y_train)
-        if len(xgb_window_X) > X_window_size:
-            xgb_window_X = xgb_window_X[-X_window_size:]
-            xgb_window_y = xgb_window_y[-X_window_size:]
+        # compute delta_acc and update meta weight
+        delta_acc = None
+        if sun_prev_acc is None:
+            delta_acc = 0.0
+        else:
+            delta_acc = acc_s - sun_prev_acc
+        sun._update_meta_weight(delta_acc, ent, drift)
+        sun_prev_acc = acc_s
 
-        X_xgb_train = np.vstack(xgb_window_X)
-        y_xgb_train = np.concatenate(xgb_window_y)
-
-        # train lightweight xgb on window
-        dtrain = xgb.DMatrix(X_xgb_train, label=y_xgb_train)
+        # 2) XGBoost train-per-chunk (streaming-like baseline)
+        t0 = time.time()
+        dtrain = xgb.DMatrix(X_train, label=y_train)
         dtest = xgb.DMatrix(X_test)
-        xgb_model = xgb.train(
-            {"objective": "multi:softprob", "num_class": len(classes),
-             "max_depth": 3, "eta": 0.25, "verbosity": 0}, dtrain, num_boost_round=6
-        )
-        p_xgb = xgb_model.predict(dtest)  # softprob
-        # ensure shape: (n, K)
-        p_xgb = np.asarray(p_xgb)
-        if p_xgb.ndim == 1:
-            # sometimes returns class indices; fallback to one-hot
-            onehot = np.zeros((len(p_xgb), len(classes)), dtype=np.float32)
-            onehot[np.arange(len(p_xgb)), p_xgb.astype(int)] = 1.0
-            p_xgb = onehot
-        pred_x = np.argmax(p_xgb, axis=1)
-        x_acc = accuracy_score(y_test, pred_x)
+        xgb_model = xgb.train(xgb_params, dtrain, num_boost_round=8)
+        pred_x = xgb_model.predict(dtest).astype(int)
+        t_x = time.time() - t0
+        acc_x = accuracy_score(y_test, pred_x)
+        f1_x = f1_score(y_test, pred_x, average='weighted')
 
-        # optimizer updates blend
-        optimizer.update(s_acc, x_acc)
-        blend = optimizer.get_blend()
+        # 3) Blend baseline: weighted voting using sun.w (proxy)
+        # we'll use sun.w to blend predictions (sun stronger -> weight toward sun)
+        # get soft proxies: for sun, use one-hot of pred; for xgb, same
+        # (cheap approximate)
+        w = sun.w
+        blend_pred = np.where(np.random.rand(len(pred_s)) < w, pred_s, pred_x)
+        acc_b = accuracy_score(y_test, blend_pred)
 
-        # optionally incorporate teacher soft labels into sunyata target (mimic distillation)
-        # produce blended output
-        p_blend = blend_probs(p_sun, p_xgb, blend)
-        pred_blend = np.argmax(p_blend, axis=1)
-        blend_acc = accuracy_score(y_test, pred_blend)
-        blend_f1 = f1_score(y_test, pred_blend, average="weighted")
+        # memory snapshot
+        mem_cur, mem_peak = model_memory_snapshot()
 
+        print(f"Chunk {cid:02d} | SUN={acc_s:.3f} XGB={acc_x:.3f} BLEND={acc_b:.3f} w={w:.3f} ent={ent:.3f} drift={drift:.4f}")
         results.append({
-            "chunk": i,
-            "sun_acc": s_acc,
-            "xgb_acc": x_acc,
-            "blend_acc": blend_acc,
-            "blend_f1": blend_f1,
-            "blend_weight": blend,
-            "ema_s": optimizer.ema_s_acc,
-            "ema_x": optimizer.ema_x_acc
+            'chunk': cid,
+            'sun_acc': acc_s, 'sun_f1': f1_s, 'sun_time': t_s,
+            'xgb_acc': acc_x, 'xgb_f1': f1_x, 'xgb_time': t_x,
+            'blend_acc': acc_b, 'blend_w': w,
+            'entropy': ent, 'drift': drift,
+            'mem_mb': mem_cur, 'mem_peak_mb': mem_peak
         })
-
-        print(f"Chunk {i:02d} | SUN={s_acc:.3f} XGB={x_acc:.3f} BLEND={blend_acc:.3f} w={blend:.3f}")
+        blend_weights.append(w)
 
     df = pd.DataFrame(results)
-    print("\nSTREAMING SUMMARY")
-    print(df[["sun_acc", "xgb_acc", "blend_acc"]].mean())
-    return df
+    # summary metrics
+    summary = {}
+    summary['sun_mean_acc'] = df['sun_acc'].mean()
+    summary['xgb_mean_acc'] = df['xgb_acc'].mean()
+    summary['blend_mean_acc'] = df['blend_acc'].mean()
+    summary['sun_mean_f1'] = df['sun_f1'].mean()
+    summary['xgb_mean_f1'] = df['xgb_f1'].mean()
+    summary['sun_mean_time'] = df['sun_time'].mean()
+    summary['xgb_mean_time'] = df['xgb_time'].mean()
+    summary['sun_mem_mb_mean'] = df['mem_mb'].mean()
+    summary['sun_mem_peak_mb'] = df['mem_peak_mb'].max()
+    # adaptivity
+    summary['sun_adaptivity'] = compute_adaptivity_stream(df['sun_acc'].values)
+    summary['xgb_adaptivity'] = compute_adaptivity_stream(df['xgb_acc'].values)
+    # stability: lower var means more stable
+    summary['sun_stability_var'] = float(np.var(df['sun_acc'].values))
+    summary['xgb_stability_var'] = float(np.var(df['xgb_acc'].values))
+    # interpretability proxy: entropy of blend weights
+    hist, _ = np.histogram(blend_weights, bins=10, range=(0,1), density=True)
+    hist = np.clip(hist, 1e-12, 1.0)
+    summary['interpretability_flow_entropy'] = float(-np.sum(hist * np.log(hist)))
 
+    # write outputs
+    df.to_csv(os.path.join(out_dir, 'streaming_per_chunk_results.csv'), index=False)
+    pd.Series(summary).to_csv(os.path.join(out_dir, 'summary_metrics.csv'))
+
+    # plots
+    plt.figure(figsize=(10,4))
+    plt.plot(df['chunk'], df['sun_acc'], 'o-', label='AwakenFlash (SUN)')
+    plt.plot(df['chunk'], df['xgb_acc'], 's-', label='XGBoost (per-chunk)')
+    plt.plot(df['chunk'], df['blend_acc'], '^-', label='Blend')
+    plt.xlabel('Chunk')
+    plt.ylabel('Accuracy')
+    plt.title('Streaming accuracy per chunk')
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.savefig(os.path.join(out_dir, 'streaming_accuracy.png'), dpi=150)
+    plt.close()
+
+    print("\nSUMMARY")
+    for k,v in summary.items():
+        print(f"  {k}: {v}")
+
+    print(f"\nSaved results in {out_dir}")
+    tracemalloc.stop()
+    return df, summary
 
 # ---------------------------
-# Main
+# CLI run
 # ---------------------------
-def main():
-    print("awakenFlash v2 nonlogic benchmark start")
-    chunks, classes = load_data(n_chunks=10, chunk_size=4000)
-    df = scenario_streaming_nonlogic(chunks, classes)
-    os.makedirs("benchmark_results", exist_ok=True)
-    df.to_csv("benchmark_results/awakenFlash_v2_nonlogic_streaming.csv", index=False)
-    print("Saved results to benchmark_results/awakenFlash_v2_nonlogic_streaming.csv")
-
-
 if __name__ == "__main__":
-    main()
+    df, summary = run_benchmark(n_chunks=10, chunk_size=4000, random_state=123, out_dir='benchmark_results')
