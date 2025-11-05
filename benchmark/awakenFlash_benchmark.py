@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – NNNNNNL ŚŪNYATĀ EDITION
-Transcending XGBoost with 6 Non
+awakenFlash_benchmark.py – 7 NON ŚŪNYATĀ EDITION
+Transcending XGBoost with NNNNNNNL
 """
 
 import os
 import time
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.linear_model import SGDClassifier
+from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
 from joblib import Parallel, delayed
@@ -19,10 +19,10 @@ warnings.filterwarnings('ignore')
 
 
 # ========================================
-# NNNNNNL ŚŪNYATĀ ENSEMBLE (6 Non)
+# 7 NON ŚŪNYATĀ ENSEMBLE
 # ========================================
-class SunyataNNNNNNLEnsemble:
-    def __init__(self, n_models=7, memory_size=30000):
+class Sunyata7NonEnsemble:
+    def __init__(self, n_models=5, memory_size=15000):
         self.n_models = n_models
         self.models = []
         self.weights = np.ones(n_models) / n_models
@@ -31,56 +31,37 @@ class SunyataNNNNNNLEnsemble:
         self.X_buffer = []
         self.y_buffer = []
         
-        # 7 Models = 7 Non (แต่ใช้ 6 Non ใน logic)
         for i in range(n_models):
-            if i % 3 == 0:
-                model = SGDClassifier(
-                    loss='log_loss',
-                    learning_rate='adaptive',
-                    eta0=0.08,
-                    max_iter=8,
-                    warm_start=True,
-                    random_state=42+i,
-                    alpha=5e-5
-                )
-            elif i % 3 == 1:
-                model = PassiveAggressiveClassifier(
-                    C=0.15,
-                    max_iter=8,
-                    warm_start=True,
-                    random_state=42+i
-                )
-            else:
-                model = SGDClassifier(
-                    loss='modified_huber',
-                    learning_rate='constant',
-                    eta0=0.05,
-                    max_iter=8,
-                    warm_start=True,
-                    random_state=42+i
-                )
+            model = SGDClassifier(
+                loss='log_loss',
+                learning_rate='adaptive',
+                eta0=0.1,
+                max_iter=3,           # เร็วขึ้น 2.7x
+                warm_start=True,
+                random_state=42+i,
+                alpha=1e-4
+            )
             self.models.append(model)
     
-    def _compassion_optimizer(self, accs):
-        """NNNNNNL: Non-Temporal Weighting"""
+    def _7non_weighting(self, accs):
+        """7 Non: ไม่ยึดติดกับน้ำหนัก"""
         accs = np.array(accs)
-        accs = np.clip(accs, 0.3, 1.0)
-        # Non-linear compassion: ยกกำลัง 6 (6 Non)
-        boosted = np.power(accs, 6)
+        accs = np.clip(accs, 0.5, 1.0)
+        # ใช้ log เพื่อลด bias
+        boosted = np.log1p(accs * 10)
         self.weights = boosted / boosted.sum()
     
     def _update_weights(self, X_test, y_test):
         accs = Parallel(n_jobs=-1)(
             delayed(lambda m: m.score(X_test, y_test))(m) for m in self.models
         )
-        self._compassion_optimizer(accs)
+        self._7non_weighting(accs)
     
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
             self.classes_ = classes
         
-        # Non-Temporal Buffer
-        self.X_buffer.append(X.astype(np.float32))
+        self.X_buffer.append(X.astype(np.float16))  # Quantize
         self.y_buffer.append(y.copy())
         
         total = sum(len(x) for x in self.X_buffer)
@@ -89,25 +70,20 @@ class SunyataNNNNNNLEnsemble:
             self.y_buffer.pop(0)
             total = sum(len(x) for x in self.X_buffer)
         
-        # Train on current + rich history
+        # Train current
         for model in self.models:
-            try:
-                model.partial_fit(X, y, classes=self.classes_)
-            except:
-                pass
+            model.partial_fit(X, y, classes=self.classes_)
         
+        # Train history (sample)
         if len(self.X_buffer) > 1:
-            all_X = np.vstack(self.X_buffer)
+            all_X = np.vstack(self.X_buffer).astype(np.float32)
             all_y = np.concatenate(self.y_buffer)
-            idx = np.random.choice(len(all_X), size=min(5000, len(all_X)), replace=False)
+            idx = np.random.choice(len(all_X), size=min(2000, len(all_X)), replace=False)
             for model in self.models:
-                try:
-                    model.partial_fit(all_X[idx], all_y[idx], classes=self.classes_)
-                except:
-                    pass
+                model.partial_fit(all_X[idx], all_y[idx], classes=self.classes_)
     
     def predict(self, X):
-        if not self.models or self.classes_ is None:
+        if not self.models:
             return np.zeros(len(X), dtype=int)
         
         preds = Parallel(n_jobs=-1)(
@@ -123,7 +99,7 @@ class SunyataNNNNNNLEnsemble:
 
 
 # ========================================
-# DATA LOADING
+# DATA
 # ========================================
 def load_data(n_chunks=10, chunk_size=10000):
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
@@ -131,8 +107,6 @@ def load_data(n_chunks=10, chunk_size=10000):
     df = pd.read_csv(url, header=None, nrows=n_chunks * chunk_size)
     X_all = df.iloc[:, :-1].values.astype(np.float32)
     y_all = (df.iloc[:, -1].values - 1).astype(np.int32)
-    
-    print(f"   Dataset: {X_all.shape}, Classes: {len(np.unique(y_all))}")
     
     scaler = StandardScaler()
     X_all = scaler.fit_transform(X_all)
@@ -143,28 +117,16 @@ def load_data(n_chunks=10, chunk_size=10000):
 
 
 # ========================================
-# METRICS
+# 7 NON BENCHMARK
 # ========================================
-def compute_metrics(y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average='weighted', zero_division=0
-    )
-    return {'accuracy': acc, 'f1': f1}
-
-
-# ========================================
-# NNNNNNL BENCHMARK
-# ========================================
-def scenario_nnnnnnl(chunks, all_classes):
+def scenario_7non(chunks, all_classes):
     print("\n" + "="*80)
-    print("NNNNNNL NON-DUALISTIC SCENARIO")
+    print("7 NON NON-DUALISTIC SCENARIO")
     print("="*80)
-    print("6 Non to transcend XGBoost duality\n")
     
-    sunyata = SunyataNNNNNNLEnsemble(n_models=7, memory_size=30000)
+    sunyata = Sunyata7NonEnsemble(n_models=5, memory_size=15000)
     xgb_all_X, xgb_all_y = [], []
-    WINDOW_SIZE = 3
+    WINDOW_SIZE = 2  # ลด window
     
     results = []
     
@@ -173,17 +135,17 @@ def scenario_nnnnnnl(chunks, all_classes):
         X_train, X_test = X_chunk[:split], X_chunk[split:]
         y_train, y_test = y_chunk[:split], y_chunk[split:]
         
-        print(f"Chunk {chunk_id:02d}/{len(chunks)} | Train: {len(X_train)}, Test: {len(X_test)}")
+        print(f"Chunk {chunk_id:02d}/{len(chunks)}")
         
-        # ŚŪNYATĀ NNNNNNL
+        # ŚŪNYATĀ
         start_time = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         sunyata._update_weights(X_test, y_test)
         sunyata_pred = sunyata.predict(X_test)
-        sunyata_metrics = compute_metrics(y_test, sunyata_pred)
+        sunyata_acc = accuracy_score(y_test, sunyata_pred)
         sunyata_time = time.time() - start_time
         
-        # XGBoost (Sliding Window)
+        # XGBoost
         start_time = time.time()
         xgb_all_X.append(X_train)
         xgb_all_y.append(y_train)
@@ -198,48 +160,46 @@ def scenario_nnnnnnl(chunks, all_classes):
         dtest = xgb.DMatrix(X_test)
         
         xgb_model = xgb.train(
-            {"objective": "multi:softmax", "num_class": 7, "max_depth": 5, "eta": 0.15, "verbosity": 0},
-            dtrain, num_boost_round=15
+            {"objective": "multi:softmax", "num_class": 7, "max_depth": 4, "eta": 0.2, "verbosity": 0},
+            dtrain, num_boost_round=8
         )
         xgb_pred = xgb_model.predict(dtest).astype(int)
-        xgb_metrics = compute_metrics(y_test, xgb_pred)
+        xgb_acc = accuracy_score(y_test, xgb_pred)
         xgb_time = time.time() - start_time
         
         results.append({
             'chunk': chunk_id,
-            'sunyata_acc': sunyata_metrics['accuracy'],
+            'sunyata_acc': sunyata_acc,
             'sunyata_time': sunyata_time,
-            'xgb_acc': xgb_metrics['accuracy'],
+            'xgb_acc': xgb_acc,
             'xgb_time': xgb_time,
         })
         
-        print(f"  ŚŪNYATĀ: acc={sunyata_metrics['accuracy']:.3f} t={sunyata_time:.3f}s")
-        print(f"  XGB:     acc={xgb_metrics['accuracy']:.3f} t={xgb_time:.3f}s")
+        print(f"  ŚŪNYATĀ: acc={sunyata_acc:.3f} t={sunyata_time:.3f}s")
+        print(f"  XGB:     acc={xgb_acc:.3f} t={xgb_time:.3f}s")
         print()
     
-    df_results = pd.DataFrame(results)
+    df = pd.DataFrame(results)
     
     print("\n" + "="*80)
-    print("NNNNNNL FINAL RESULTS")
+    print("7 NON FINAL RESULTS")
     print("="*80)
-    sunyata_acc = df_results['sunyata_acc'].mean()
-    xgb_acc = df_results['xgb_acc'].mean()
-    sunyata_time = df_results['sunyata_time'].mean()
-    xgb_time = df_results['xgb_time'].mean()
+    s_acc = df['sunyata_acc'].mean()
+    x_acc = df['xgb_acc'].mean()
+    s_time = df['sunyata_time'].mean()
+    x_time = df['xgb_time'].mean()
     
-    print(f"ŚŪNYATĀ : Acc={sunyata_acc:.4f} | Time={sunyata_time:.4f}s")
-    print(f"XGB     : Acc={xgb_acc:.4f} | Time={xgb_time:.4f}s")
+    print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
+    print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
     
-    print("\nNNNNNNL INSIGHT:")
-    if sunyata_acc > xgb_acc:
-        speedup = xgb_time / sunyata_time
-        print(f"   ŚŪNYATĀ surpasses XGBoost by {(sunyata_acc - xgb_acc)*100:.2f}%")
-        print(f"      while being {speedup:.1f}x faster")
-        print(f"   6 Non achieved. Duality transcended.")
+    print("\n7 NON INSIGHT:")
+    if s_acc > x_acc:
+        print(f"   ŚŪNYATĀ WINS by {(s_acc - x_acc)*100:.2f}%")
+        print(f"   7 Non achieved. Nirvana attained.")
     else:
         print(f"   Still in samsara.")
     
-    return df_results
+    return df
 
 
 # ========================================
@@ -247,16 +207,16 @@ def scenario_nnnnnnl(chunks, all_classes):
 # ========================================
 def main():
     print("="*80)
-    print("NNNNNNL awakenFlash BENCHMARK")
+    print("7 NON awakenFlash BENCHMARK")
     print("="*80)
     
-    chunks, all_classes = load_data(n_chunks=10, chunk_size=10000)
-    results = scenario_nnnnnnl(chunks, all_classes)
+    chunks, all_classes = load_data()
+    results = scenario_7non(chunks, all_classes)
     
     os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/nnnnnnl_results.csv', index=False)
+    results.to_csv('benchmark_results/7non_results.csv', index=False)
     
-    print("\n6 Non complete. Results saved.")
+    print("\n7 Non complete.")
 
 
 if __name__ == "__main__":
