@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark.py – 8 NON ŚŪNYATĀ EDITION
-Absolute Transcendence of XGBoost
+Absolute Transcendence of XGBoost (Fixed)
 """
 
 import os
@@ -31,14 +31,13 @@ class Sunyata8NonEnsemble:
         self.classes_ = None
         self.X_recent = None
         self.y_recent = None
+        self.first_fit = True  # ใช้ flag แทน
     
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
             self.classes_ = classes
-            for m in self.models:
-                m.fit(X[:1], y[:1])  # Warm up
         
-        # 8 Non: ไม่เก็บ history, ฝึกแค่ current + recent
+        # 8 Non: ฝึกแค่ current + recent
         if self.X_recent is not None:
             X_train = np.vstack([self.X_recent, X])
             y_train = np.concatenate([self.y_recent, y])
@@ -50,16 +49,22 @@ class Sunyata8NonEnsemble:
             idx = np.random.choice(len(X_train), 3000, replace=False)
             X_train, y_train = X_train[idx], y_train[idx]
         
-        # ฝึกแค่ 1 iteration
+        # ฝึกด้วย partial_fit เท่านั้น (ไม่ใช้ fit)
         for m in self.models:
-            m.partial_fit(X_train, y_train, classes=self.classes_)
+            if self.first_fit:
+                # ครั้งแรก: ใช้ fit กับข้อมูลเต็ม
+                m.fit(X_train, y_train)
+            else:
+                m.partial_fit(X_train, y_train, classes=self.classes_)
+        
+        self.first_fit = False
         
         # เก็บ recent
         self.X_recent = X[-1000:].copy()
         self.y_recent = y[-1000:].copy()
     
     def predict(self, X):
-        if not self.models:
+        if not self.models or self.classes_ is None:
             return np.zeros(len(X), dtype=int)
         
         preds = np.column_stack([m.predict(X) for m in self.models])
@@ -99,7 +104,7 @@ def scenario_8non(chunks, all_classes):
     
     sunyata = Sunyata8NonEnsemble()
     xgb_all_X, xgb_all_y = [], []
-    WINDOW_SIZE = 1  # XGBoost ฝึกแค่ chunk ล่าสุด
+    WINDOW_SIZE = 1
     
     results = []
     
