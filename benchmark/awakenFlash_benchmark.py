@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 49 NON: BATCHED RLS
-O(D²) per batch | Stable P | Speed Demon
+awakenFlash_benchmark.py – 63 NON: NIRVANA
+Einstein Brain-Heart Lab Final Form
 """
 
 import os
@@ -15,184 +15,105 @@ from sklearn.metrics import accuracy_score
 import warnings
 warnings.filterwarnings('ignore')
 
-# === VECTORIZED ABSOLUTE NON ===
-class VectorizedAbsoluteNon:
-    def __init__(self, n=1, α=0.7, β=0.6, γ=0.95, δ=0.9):
-        self.n = n
-        self.α = α
-        self.β = β
-        self.γ = γ
-        self.δ = δ
-        self.log2 = np.log(2.0)
+# === ABSOLUTE NON v2 ===
+class AbsoluteNonV2:
+    def __init__(self):
         self.pi = np.pi
-        self.sqrt_pi = np.sqrt(np.pi)
-        self.sign_n = 1.0 if n % 2 == 0 else -1.0
-
+        self.log2 = np.log(2.0)
+    
     def transform(self, x):
         x = np.asarray(x, dtype=np.float32)
-        if x.ndim == 1:
-            x = x.reshape(-1, 1)
         x = np.clip(x, -5.0, 5.0)
         abs_diff = np.abs(x - 0.5)
-        sym = self.α * np.exp(-self.n * self.log2 * abs_diff)
-        flow = (1 - self.α) * x * np.exp(-self.n * self.log2)
-        enlight = self.β * (np.sin(self.pi * x) + 0.5 * np.cos(2 * self.pi * x))
-        compassion = self.δ * (1 - abs_diff) / np.sqrt(1 + x**2)
-        linear = 0.5 + self.sign_n * (x - 0.5) * np.exp(-(self.n - 1) * self.log2)
-        non_core = sym + flow + linear * 1e-12
-        full = non_core + (1 - self.β) * enlight + (1 - self.δ) * compassion
-        meta = self.γ * np.exp(-x**2) / self.sqrt_pi * np.cos(2 * self.pi * x)
-        return self.γ * meta + (1 - self.γ) * full
+        sym = 0.7 * np.exp(-1 * self.log2 * abs_diff)
+        flow = 0.3 * x * np.exp(-1 * self.log2)
+        enlight = 0.6 * (np.sin(self.pi * x) + 0.5 * np.cos(2 * self.pi * x))
+        compassion = 0.9 * (1 - abs_diff) / np.sqrt(1 + x**2)
+        linear = 0.5 + (x - 0.5) * np.exp(-1 * self.log2)
+        non = sym + flow + enlight + compassion + linear * 1e-12
+        meta = 0.95 * np.exp(-x**2) / np.sqrt(self.pi) * np.cos(2 * self.pi * x)
+        return 0.95 * meta + 0.05 * non
 
-_abs_non = VectorizedAbsoluteNon(n=1)
+_non = AbsoluteNonV2()
 
-# === 49 NON: BATCHED RLS ===
-class SunyataV16_BatchedRLS:
-    def __init__(self, D_init=1024, C=200.0, forgetting=0.99, seed=42, buffer_size=2000, batch_size=128):
-        self.D = int(D_init)
+# === 63 NON: NIRVANA ===
+class SunyataV63_Nirvana:
+    def __init__(self, D=2048, ensemble_size=3, buffer_chunks=3, C=50.0, seed=42):
+        self.D = int(D)
+        self.ensemble_size = int(ensemble_size)
+        self.buffer_chunks = int(buffer_chunks)
         self.C = float(C)
-        self.forgetting = float(forgetting)
         self.rng = np.random.default_rng(seed)
-        self.W = None
-        self.alpha = None          # (D, K)
-        self.P = None              # (D, D)
+        self.models = collections.deque(maxlen=self.ensemble_size)
+        self.buffer = collections.deque(maxlen=self.buffer_chunks)
         self.classes_ = None
-        self.class_to_idx = {}
-        self.buffer_size = int(buffer_size)
-        self.batch_size = int(batch_size)
-        self.buffer = collections.deque(maxlen=self.buffer_size)  # (phi_non, y_onehot)
+        self.confidence_history = []
         self.eps = 1e-6
-        self.initialized = False
 
-    def _rff_features(self, X):
-        n_features = X.shape[1]
-        target_rows = self.D // 2
-        if self.W is None or self.W.shape[1] != n_features:
-            scale = 1.0 / np.sqrt(n_features)
-            self.W = self.rng.normal(0, scale, (target_rows, n_features)).astype(np.float32)
-        X32 = X.astype(np.float32)
-        proj = X32 @ self.W.T
-        phi = np.hstack([np.cos(proj), np.sin(proj)]) * np.sqrt(2.0 / self.D)
-        return phi
+    def _rff(self, X, W):
+        proj = X.astype(np.float32) @ W.T
+        return np.hstack([np.cos(proj), np.sin(proj)]) * np.sqrt(2.0 / self.D)
 
-    def _augment_features(self, phi):
-        n, D = phi.shape
-        m = min(64, D//4)
+    def _features(self, X, W):
+        phi = self._rff(X, W)
+        phi = _non.transform(phi)
+        # Interaction
+        m = min(128, phi.shape[1]//4)
         if m > 0:
-            inter = (phi[:, :m] * phi[:, m:2*m])
-            phi_aug = np.hstack([phi, inter])
-        else:
-            phi_aug = phi
-        mu = phi_aug.mean(axis=0, keepdims=True)
-        std = phi_aug.std(axis=0, keepdims=True) + self.eps
-        return (phi_aug - mu) / std
+            inter = phi[:, :m] * phi[:, m:2*m]
+            phi = np.hstack([phi, inter])
+        return (phi - phi.mean(axis=0)) / (phi.std(axis=0) + self.eps)
 
-    def _encode_labels(self, y):
-        if self.classes_ is None:
-            self.classes_ = np.unique(y)
-            self.class_to_idx = {cls: i for i, cls in enumerate(self.classes_)}
-        return np.array([self.class_to_idx.get(val, 0) for val in y], dtype=np.int32)
-
-    def _initialize_with_full_solve(self, phi_non, y_onehot):
-        n, D = phi_non.shape
-        K = y_onehot.shape[1]
-        ridge = self.C / max(1, n)
-        H = (phi_non.T @ phi_non) / n + np.eye(D) * ridge
+    def _train_model(self, X_buf, y_buf):
+        n = X_buf.shape[0]
+        K = len(self.classes_)
+        W = self.rng.normal(0, 1.0/np.sqrt(X_buf.shape[1]), (self.D//2, X_buf.shape[1])).astype(np.float32)
+        phi = self._features(X_buf, W)
+        y_onehot = np.eye(K)[y_buf]
+        
+        H = (phi.T @ phi) / n + np.eye(phi.shape[1]) * (self.C / n)
         try:
-            self.alpha = np.linalg.solve(H + self.eps * np.eye(D), (phi_non.T @ y_onehot) / n)
-            self.P = np.linalg.inv(H + self.eps * np.eye(D))
+            alpha = np.linalg.solve(H + self.eps * np.eye(phi.shape[1]), (phi.T @ y_onehot) / n)
         except:
-            self.alpha = np.linalg.pinv(H + self.eps * np.eye(D)) @ ((phi_non.T @ y_onehot) / n)
-            self.P = np.linalg.pinv(H + self.eps * np.eye(D))
-        self.initialized = True
-
-    def _batched_rls_update(self, X_batch, y_batch):
-        # X_batch: (B, D), y_batch: (B, K)
-        B, D = X_batch.shape
-        K = y_batch.shape[1]
-
-        # Predict: (B, K)
-        pred = X_batch @ self.alpha  # (B, D) @ (D, K)
-        error = y_batch - pred  # (B, K)
-
-        # PX = P @ X.T → (D, B)
-        PX = self.P @ X_batch.T
-        # S = X @ PX → (B, B)
-        S = X_batch @ PX
-        S_diag = S.diagonal()
-        S_diag = np.clip(S_diag, self.eps, None)
-        # Gain K = PX @ inv(S) → (D, B)
-        K_gain = PX / S_diag[None, :]  # broadcasting
-
-        # Alpha update
-        self.alpha += K_gain @ error  # (D, B) @ (B, K) → (D, K)
-
-        # P update (Woodbury)
-        temp = K_gain @ X_batch  # (D, D)
-        self.P -= temp
-        self.P *= self.forgetting
-        self.P += (1 - self.forgetting) * np.eye(D) * (self.C / D)
+            alpha = np.linalg.pinv(H) @ ((phi.T @ y_onehot) / n)
+        return W, alpha, phi
 
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
             self.classes_ = classes
-            self.class_to_idx = {c: i for i, c in enumerate(classes)}
+        y_idx = np.array([np.where(c == self.classes_)[0][0] for c in y])
+        
+        self.buffer.append((X.copy(), y_idx.copy()))
+        X_buf = np.vstack([x for x, _ in self.buffer]) if len(self.buffer) > 1 else X
+        y_buf = np.hstack([yy for _, yy in self.buffer]) if len(self.buffer) > 1 else y_idx
 
-        X32 = X.astype(np.float32)
-        y_idx = self._encode_labels(y)
-        phi = self._rff_features(X32)
-        phi_non = _abs_non.transform(phi)
-        phi_non = self._augment_features(phi_non)
-        n, D_aug = phi_non.shape
-        K = len(self.classes_)
+        W, alpha, phi = self._train_model(X_buf, y_buf)
+        self.models.append((W, alpha))
 
-        # Self-distillation
-        if self.alpha is not None and self.alpha.shape[1] == K:
-            scores = phi_non @ self.alpha
-            probs = np.exp(scores - scores.max(axis=1, keepdims=True))
-            probs /= probs.sum(axis=1, keepdims=True) + self.eps
-            confidence = np.mean(np.max(probs, axis=1))
-            distill_alpha = min(0.7, 0.1 + 0.6 * confidence)
-        else:
-            probs = np.eye(K)[y_idx]
-            distill_alpha = 0.0
-
-        hard = np.zeros((n, K), dtype=np.float32)
-        hard[np.arange(n), y_idx] = 1.0
-        y_onehot = (1.0 - distill_alpha) * hard + distill_alpha * probs
-
-        # === COLD START ===
-        if not self.initialized and n >= 512:
-            self._initialize_with_full_solve(phi_non, y_onehot)
-            for i in range(min(n, self.buffer_size)):
-                self.buffer.append((phi_non[i].copy(), y_onehot[i].copy()))
-            return self
-
-        # === ADD TO BUFFER ===
-        for i in range(n):
-            self.buffer.append((phi_non[i].copy(), y_onehot[i].copy()))
-
-        # === BATCHED RLS UPDATE ===
-        buf_n = len(self.buffer)
-        if buf_n < self.batch_size or self.alpha is None:
-            return self
-
-        # Sample batch
-        idxs = self.rng.choice(buf_n, self.batch_size, replace=False)
-        X_batch = np.stack([self.buffer[i][0] for i in idxs])
-        y_batch = np.stack([self.buffer[i][1] for i in idxs])
-
-        self._batched_rls_update(X_batch, y_batch)
-
+        # Self-Distillation Confidence
+        if len(self.models) > 1:
+            preds = [np.argmax(self._predict_single(X, W, alpha), axis=1) for W, alpha in self.models[:-1]]
+            confidence = np.mean([accuracy_score(preds[0], p) for p in preds[1:]])
+            self.confidence_history.append(confidence)
         return self
 
+    def _predict_single(self, X, W, alpha):
+        phi = self._features(X, W)
+        return phi @ alpha
+
     def predict(self, X):
-        if self.alpha is None or self.classes_ is None:
-            return np.full(len(X), 0, dtype=np.int32)
-        phi = self._rff_features(X.astype(np.float32))
-        phi_non = _abs_non.transform(phi)
-        phi_non = self._augment_features(phi_non)
-        scores = phi_non @ self.alpha
+        if not self.models:
+            return np.zeros(len(X), dtype=np.int32)
+        
+        scores = np.zeros((len(X), len(self.classes_)))
+        weights = np.ones(len(self.models))
+        if len(self.confidence_history) > 0:
+            weights = np.exp(np.array(self.confidence_history[-len(self.models):]))
+            weights /= weights.sum()
+        
+        for (W, alpha), w in zip(self.models, weights):
+            scores += w * self._predict_single(X, W, alpha)
+        
         return self.classes_[np.argmax(scores, axis=1)]
 
 # === BENCHMARK ===
@@ -206,11 +127,11 @@ def load_data(n_chunks=10, chunk_size=10000):
     chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) for i in range(0, len(X_all), chunk_size)]
     return chunks[:n_chunks], np.unique(y_all)
 
-def scenario_49non(chunks, all_classes):
+def scenario_63non(chunks, all_classes):
     print("\n" + "="*80)
-    print("49 NON: BATCHED RLS — SPEED DEMON")
+    print("63 NON: NIRVANA — EINSTEIN BRAIN-HEART LAB FINAL FORM")
     print("="*80)
-    sunyata = SunyataV16_BatchedRLS(D_init=1024, C=200.0, forgetting=0.99, buffer_size=2000, batch_size=128)
+    sunyata = SunyataV63_Nirvana(D=2048, ensemble_size=3, buffer_chunks=3, C=50.0)
     results = []
 
     for cid, (X_chunk, y_chunk) in enumerate(chunks, 1):
@@ -218,7 +139,7 @@ def scenario_49non(chunks, all_classes):
         X_train, X_test = X_chunk[:split], X_chunk[split:]
         y_train, y_test = y_chunk[:split], y_chunk[split:]
 
-        print(f"Chunk {cid:02d}/{len(chunks)} | Init={sunyata.initialized} | Buffer={len(sunyata.buffer)}")
+        print(f"Chunk {cid:02d} | Ensemble={len(sunyata.models)} | Buffer={len(sunyata.buffer)}")
 
         t0 = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
@@ -236,30 +157,28 @@ def scenario_49non(chunks, all_classes):
         t_x = time.time() - t0
 
         results.append({'chunk': cid, 's_acc': acc_s, 's_time': t_s, 'x_acc': acc_x, 'x_time': t_x})
-        print(f"  BATCHED RLS: acc={acc_s:.3f} t={t_s:.3f}s  |  XGB: acc={acc_x:.3f} t={t_x:.3f}s")
+        print(f"  NIRVANA: acc={acc_s:.4f} t={t_s:.3f}s  |  XGB: acc={acc_x:.4f} t={t_x:.3f}s")
 
     df = pd.DataFrame(results)
-    print("\nBATCHED RLS ACHIEVED")
+    print("\nNIRVANA ACHIEVED")
     s_acc = df['s_acc'].mean()
     x_acc = df['x_acc'].mean()
     s_time = df['s_time'].mean()
     x_time = df['x_time'].mean()
-    print(f"BATCHED RLS: {s_acc:.4f} | {s_time:.3f}s")
-    print(f"XGB:         {x_acc:.4f} | {x_time:.3f}s")
-    if s_time < 0.08:
-        print("=> SPEED: < 0.08s — DEMON MODE.")
-    if s_acc > 0.80:
-        print("=> ACCURACY: > 0.80 — NIRVANA.")
+    print(f"NIRVANA: {s_acc:.4f} | {s_time:.3f}s")
+    print(f"XGB:     {x_acc:.4f} | {x_time:.3f}s")
+    if s_acc > x_acc and s_time < x_time:
+        print("=> NIRVANA: WINS BOTH ACCURACY AND SPEED — TOTAL VICTORY.")
     return df
 
 def main():
     print("="*80)
-    print("49 NON: BATCHED RLS IN awakenFlash")
+    print("63 NON: NIRVANA IN awakenFlash")
     print("="*80)
     chunks, all_classes = load_data()
-    df = scenario_49non(chunks, all_classes)
+    df = scenario_63non(chunks, all_classes)
     os.makedirs('benchmark_results', exist_ok=True)
-    df.to_csv('benchmark_results/49non_batched_rls.csv', index=False)
+    df.to_csv('benchmark_results/63non_nirvana.csv', index=False)
 
 if __name__ == "__main__":
     main()
