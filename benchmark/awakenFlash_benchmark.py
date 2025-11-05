@@ -27,7 +27,13 @@ class TemporalTranscendenceEnsemble:
     - Polynomial features without attachment to complexity
     """
     
-    def __init__(self, n_base_models=15, memory_size=80000):
+    def __init__(self, n_base_models=7, memory_size=40000):
+        """
+        Optimized for SPEED while maintaining accuracy
+        - Reduce models: 15 → 7
+        - Reduce memory: 80K → 40K  
+        - Keep only best techniques
+        """
         self.n_base_models = n_base_models
         self.models = []
         self.weights = np.ones(n_base_models) / n_base_models
@@ -35,72 +41,84 @@ class TemporalTranscendenceEnsemble:
         self.all_data_y = []
         self.memory_size = memory_size
         
-        # MAXIMUM diversity - 15 models!
+        # Only BEST 7 models (quality over quantity)
         for i in range(n_base_models):
-            if i % 7 == 0:
+            if i == 0:
+                # Best SGD variant
                 model = SGDClassifier(
                     loss='log_loss',
                     learning_rate='optimal',
-                    max_iter=30,
+                    max_iter=20,  # Reduced from 30
                     warm_start=True,
                     random_state=42+i,
-                    alpha=0.000025 * (1 + i * 0.015)
+                    alpha=0.00003,
+                    n_jobs=-1  # Parallel!
                 )
-            elif i % 7 == 1:
+            elif i == 1:
+                # Best PA variant
                 model = PassiveAggressiveClassifier(
-                    C=0.025 * (1 + i * 0.12),
-                    max_iter=30,
+                    C=0.02,
+                    max_iter=20,
                     warm_start=True,
-                    random_state=42+i
+                    random_state=42+i,
+                    n_jobs=-1
                 )
-            elif i % 7 == 2:
+            elif i == 2:
+                # Modified Huber (robust)
                 model = SGDClassifier(
                     loss='modified_huber',
-                    learning_rate='adaptive',
-                    max_iter=30,
-                    warm_start=True,
-                    random_state=42+i,
-                    eta0=0.025
-                )
-            elif i % 7 == 3:
-                model = SGDClassifier(
-                    loss='perceptron',
                     learning_rate='optimal',
-                    max_iter=30,
-                    warm_start=True,
-                    random_state=42+i,
-                    penalty='l1',
-                    alpha=0.00006
-                )
-            elif i % 7 == 4:
-                model = PassiveAggressiveClassifier(
-                    C=0.03,
-                    max_iter=30,
-                    warm_start=True,
-                    random_state=42+i,
-                    loss='squared_hinge'
-                )
-            elif i % 7 == 5:
-                model = SGDClassifier(
-                    loss='hinge',
-                    learning_rate='optimal',
-                    max_iter=30,
+                    max_iter=20,
                     warm_start=True,
                     random_state=42+i,
                     alpha=0.00004,
-                    penalty='l2'
+                    n_jobs=-1
+                )
+            elif i == 3:
+                # Hinge loss (SVM-like)
+                model = SGDClassifier(
+                    loss='hinge',
+                    learning_rate='optimal',
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    alpha=0.00005,
+                    n_jobs=-1
+                )
+            elif i == 4:
+                # PA squared hinge
+                model = PassiveAggressiveClassifier(
+                    C=0.025,
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    loss='squared_hinge',
+                    n_jobs=-1
+                )
+            elif i == 5:
+                # Perceptron
+                model = SGDClassifier(
+                    loss='perceptron',
+                    learning_rate='optimal',
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    penalty='l1',
+                    alpha=0.00008,
+                    n_jobs=-1
                 )
             else:
-                # Add elastic net
+                # Elastic net
                 model = SGDClassifier(
                     loss='log_loss',
-                    learning_rate='adaptive',
-                    max_iter=30,
+                    learning_rate='optimal',
+                    max_iter=20,
                     warm_start=True,
                     random_state=42+i,
                     penalty='elasticnet',
-                    alpha=0.00005,
-                    l1_ratio=0.15
+                    alpha=0.00006,
+                    l1_ratio=0.15,
+                    n_jobs=-1
                 )
             self.models.append(model)
         
@@ -113,23 +131,23 @@ class TemporalTranscendenceEnsemble:
     
     def _create_interactions(self, X):
         """
-        AGGRESSIVE feature engineering
+        FAST feature engineering - only top interactions
         """
         if self.interaction_pairs is None:
             n_features = X.shape[1]
-            # Top 15 variance features (more!)
+            # Only top 8 features (reduced from 15)
             variances = np.var(X, axis=0)
-            top_indices = np.argsort(variances)[-15:]
+            top_indices = np.argsort(variances)[-8:]
             
-            # More pairs
+            # Fewer pairs (most important only)
             self.interaction_pairs = []
             for i in range(len(top_indices)):
-                for j in range(i+1, min(i+5, len(top_indices))):
+                for j in range(i+1, min(i+3, len(top_indices))):  # Only 3 pairs per feature
                     self.interaction_pairs.append((top_indices[i], top_indices[j]))
         
-        # Create 30 interactions (more!)
+        # Only 15 interactions (reduced from 30)
         X_interactions = []
-        for i, j in self.interaction_pairs[:30]:
+        for i, j in self.interaction_pairs[:15]:
             X_interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
         
         if X_interactions:
@@ -181,26 +199,25 @@ class TemporalTranscendenceEnsemble:
             except:
                 pass
         
-        # 2. VERY aggressive batch learning
+        # 2. Smart batch learning (not too aggressive)
         if len(self.all_data_X) >= 1:
             all_X = np.vstack(self.all_data_X)
             all_y = np.concatenate(self.all_data_y)
             
-            # Sample MUCH MORE (15K!)
-            n_samples = min(len(all_X), 15000)
+            # Moderate sampling: 8K (reduced from 15K)
+            n_samples = min(len(all_X), 8000)
             indices = np.random.choice(len(all_X), n_samples, replace=False)
             X_sample = all_X[indices]
             y_sample = all_y[indices]
             
             X_sample_aug = self._create_interactions(X_sample)
             
-            # Train TWICE for better consolidation
-            for _ in range(2):
-                for model in self.models:
-                    try:
-                        model.partial_fit(X_sample_aug, y_sample)
-                    except:
-                        pass
+            # Train ONCE only (not twice)
+            for model in self.models:
+                try:
+                    model.partial_fit(X_sample_aug, y_sample)
+                except:
+                    pass
     
     def predict(self, X):
         """Predict with interactions"""
@@ -280,8 +297,8 @@ def scenario_non_dualistic(chunks, all_classes):
     print("Philosophy: Using NNNNNNNNL (8 Non) to transcend epistemic boundaries")
     print("           Adding feature interactions to capture non-linearity\n")
     
-    # Initialize with MAXIMUM power
-    temporal = TemporalTranscendenceEnsemble(n_base_models=15, memory_size=80000)
+    # Initialize SPEED-OPTIMIZED ensemble
+    temporal = TemporalTranscendenceEnsemble(n_base_models=7, memory_size=40000)
     
     sgd = SGDClassifier(
         loss="log_loss",
@@ -432,12 +449,19 @@ def scenario_non_dualistic(chunks, all_classes):
         speedup = xgb_time / temporal_time
         print(f"   ✅ Temporal Transcendence achieves {temporal_acc:.4f} accuracy")
         print(f"      surpassing XGBoost's {xgb_acc:.4f} (+{(temporal_acc-xgb_acc)*100:.2f}%)")
-        print(f"      while being {speedup:.1f}x faster ({temporal_time:.3f}s vs {xgb_time:.3f}s)")
-        print(f"   ✅ Successfully transcended online/batch AND temporal duality! 🙏")
+        print(f"      while being {speedup:.1f}x {'faster' if speedup > 1 else 'slower'}")
+        print(f"      ({temporal_time:.3f}s vs {xgb_time:.3f}s)")
+        if speedup > 1:
+            print(f"   🚀 Speed + Accuracy victory!")
+        print(f"   ✅ Successfully transcended online/batch duality! 🙏")
     else:
         gap = (xgb_acc - temporal_acc) * 100
+        speedup = xgb_time / temporal_time
         print(f"   ⚠️  XGBoost ahead by {gap:.2f}% accuracy")
-        print(f"   💭 Temporal still {xgb_time/temporal_time:.1f}x faster though")
+        if speedup < 1:
+            print(f"   💭 But Temporal is {1/speedup:.1f}x slower")
+        else:
+            print(f"   ✅ Temporal is {speedup:.1f}x faster though!")
     
     return df_results
 
