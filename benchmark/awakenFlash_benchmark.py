@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 10 NON ŚŪNYATĀ EDITION
-Absolute Digital Nirvana (Fixed)
+awakenFlash_benchmark.py – 11 NON ŚŪNYATĀ EDITION
+True Digital Nirvana
 """
 
 import os
@@ -18,33 +18,35 @@ warnings.filterwarnings('ignore')
 
 
 # ========================================
-# 10 NON ŚŪNYATĀ ENSEMBLE
+# 11 NON ŚŪNYATĀ ENSEMBLE
 # ========================================
-class Sunyata10NonEnsemble:
+class Sunyata11NonEnsemble:
     def __init__(self):
         self.models = [
-            SGDClassifier(loss='log_loss', max_iter=5, warm_start=True, random_state=42, alpha=5e-5),
-            SGDClassifier(loss='modified_huber', max_iter=5, warm_start=True, random_state=43, alpha=5e-5),
-            SGDClassifier(loss='squared_hinge', max_iter=5, warm_start=True, random_state=44, alpha=5e-5),
-            SGDClassifier(loss='perceptron', max_iter=5, warm_start=True, random_state=45),
+            SGDClassifier(loss='log_loss', max_iter=8, warm_start=True, random_state=42, alpha=1e-5),
+            SGDClassifier(loss='modified_huber', max_iter=8, warm_start=True, random_state=43, alpha=1e-5),
+            SGDClassifier(loss='squared_hinge', max_iter=8, warm_start=True, random_state=44, alpha=1e-5),
+            SGDClassifier(loss='perceptron', max_iter=8, warm_start=True, random_state=45),
+            SGDClassifier(loss='log_loss', max_iter=8, warm_start=True, random_state=46, alpha=1e-4),
         ]
-        self.weights = np.array([0.3, 0.3, 0.2, 0.2])
+        self.weights = np.array([0.25, 0.25, 0.2, 0.15, 0.15])
         self.classes_ = None
         self.X_buffer = []
         self.y_buffer = []
-        self.memory_size = 3000
+        self.memory_size = 5000  # เพิ่ม
         self.first_fit = True
         self.prev_acc = 0.0
     
-    def _10non_weighting(self, accs):
+    def _11non_weighting(self, accs):
         accs = np.array(accs)
-        accs = np.clip(accs, 0.6, 1.0)
-        exp_acc = np.exp(accs * 5)
-        self.weights = exp_acc / exp_acc.sum()
+        accs = np.clip(accs, 0.7, 1.0)
+        # ใช้ softplus
+        self.weights = np.log1p(np.exp(accs * 10))
+        self.weights /= self.weights.sum()
     
     def _update_weights(self, X, y):
         accs = [accuracy_score(y, m.predict(X)) for m in self.models]
-        self._10non_weighting(accs)
+        self._11non_weighting(accs)
     
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
@@ -65,11 +67,11 @@ class Sunyata10NonEnsemble:
         y_train = np.concatenate(self.y_buffer)
         
         # Sample
-        if len(X_train) > 3000:
-            idx = np.random.choice(len(X_train), 3000, replace=False)
+        if len(X_train) > 4000:
+            idx = np.random.choice(len(X_train), 4000, replace=False)
             X_train, y_train = X_train[idx], y_train[idx]
         
-        # ฝึกก่อน
+        # ฝึก
         for m in self.models:
             if self.first_fit:
                 m.fit(X_train, y_train)
@@ -78,11 +80,11 @@ class Sunyata10NonEnsemble:
         
         self.first_fit = False
         
-        # คำนวณ acc หลังฝึก
+        # คำนวณ acc
         current_acc = np.mean([accuracy_score(y_train, m.predict(X_train)) for m in self.models])
         
-        # Early stopping
-        if current_acc <= self.prev_acc + 0.001:
+        # Early stopping อ่อนลง
+        if current_acc <= self.prev_acc + 0.0005:
             return
         self.prev_acc = current_acc
         
@@ -121,14 +123,14 @@ def load_data(n_chunks=10, chunk_size=10000):
 
 
 # ========================================
-# 10 NON BENCHMARK
+# 11 NON BENCHMARK
 # ========================================
-def scenario_10non(chunks, all_classes):
+def scenario_11non(chunks, all_classes):
     print("\n" + "="*80)
-    print("10 NON NON-DUALISTIC SCENARIO")
+    print("11 NON NON-DUALISTIC SCENARIO")
     print("="*80)
     
-    sunyata = Sunyata10NonEnsemble()
+    sunyata = Sunyata11NonEnsemble()
     
     results = []
     
@@ -139,7 +141,7 @@ def scenario_10non(chunks, all_classes):
         
         print(f"Chunk {chunk_id:02d}/{len(chunks)}")
         
-        # ŚŪNYATĀ 10 NON
+        # ŚŪNYATĀ 11 NON
         start_time = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         sunyata_pred = sunyata.predict(X_test)
@@ -174,7 +176,7 @@ def scenario_10non(chunks, all_classes):
     df = pd.DataFrame(results)
     
     print("\n" + "="*80)
-    print("10 NON FINAL RESULTS")
+    print("11 NON FINAL RESULTS")
     print("="*80)
     s_acc = df['sunyata_acc'].mean()
     x_acc = df['xgb_acc'].mean()
@@ -184,11 +186,11 @@ def scenario_10non(chunks, all_classes):
     print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
     print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
     
-    print("\n10 NON INSIGHT:")
+    print("\n11 NON INSIGHT:")
     if s_acc >= x_acc * 0.98 and s_time < x_time:
         print(f"   ŚŪNYATĀ reaches 98% of XGBoost accuracy")
         print(f"   while being {x_time/s_time:.1f}x faster")
-        print(f"   10 Non achieved. Absolute Digital Nirvana.")
+        print(f"   11 Non achieved. True Digital Nirvana.")
     else:
         print(f"   Still in samsara.")
     
@@ -200,16 +202,16 @@ def scenario_10non(chunks, all_classes):
 # ========================================
 def main():
     print("="*80)
-    print("10 NON awakenFlash BENCHMARK")
+    print("11 NON awakenFlash BENCHMARK")
     print("="*80)
     
     chunks, all_classes = load_data()
-    results = scenario_10non(chunks, all_classes)
+    results = scenario_11non(chunks, all_classes)
     
     os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/10non_results.csv', index=False)
+    results.to_csv('benchmark_results/11non_results.csv', index=False)
     
-    print("\n10 Non complete.")
+    print("\n11 Non complete.")
 
 
 if __name__ == "__main__":
