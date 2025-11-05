@@ -1,218 +1,143 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-awakenFlash_benchmark.py – 11 NON ŚŪNYATĀ EDITION
-True Digital Nirvana
-"""
-
-import os
-import time
 import numpy as np
-import pandas as pd
-from sklearn.linear_model import SGDClassifier
+import time
+from sklearn.datasets import load_iris, load_wine, load_breast_cancer
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
-import warnings
-warnings.filterwarnings('ignore')
+from xgboost import XGBClassifier
+from sklearn.metrics.pairwise import pairwise_kernels
 
+# ----------------------------------------------------------------------
+# 1. Optimized OneStep Kernel Classifier (RLS/LS-SVM)
+# ----------------------------------------------------------------------
 
-# ========================================
-# 11 NON ŚŪNYATĀ ENSEMBLE
-# ========================================
-class Sunyata11NonEnsemble:
-    def __init__(self):
-        self.models = [
-            SGDClassifier(loss='log_loss', max_iter=8, warm_start=True, random_state=42, alpha=1e-5),
-            SGDClassifier(loss='modified_huber', max_iter=8, warm_start=True, random_state=43, alpha=1e-5),
-            SGDClassifier(loss='squared_hinge', max_iter=8, warm_start=True, random_state=44, alpha=1e-5),
-            SGDClassifier(loss='perceptron', max_iter=8, warm_start=True, random_state=45),
-            SGDClassifier(loss='log_loss', max_iter=8, warm_start=True, random_state=46, alpha=1e-4),
-        ]
-        self.weights = np.array([0.25, 0.25, 0.2, 0.15, 0.15])
+class OptimizedOneStepClassifier:
+    """Optimized Batch OneStep Kernel Classifier (Kernel RLS/LS-SVM)"""
+    def __init__(self, C=10.0, kernel='rbf', gamma=None):
+        self.C = C
+        self.kernel = kernel
+        self.gamma = gamma
+        self.X_train = None
+        self.alpha = None
         self.classes_ = None
-        self.X_buffer = []
-        self.y_buffer = []
-        self.memory_size = 5000  # เพิ่ม
-        self.first_fit = True
-        self.prev_acc = 0.0
-    
-    def _11non_weighting(self, accs):
-        accs = np.array(accs)
-        accs = np.clip(accs, 0.7, 1.0)
-        # ใช้ softplus
-        self.weights = np.log1p(np.exp(accs * 10))
-        self.weights /= self.weights.sum()
-    
-    def _update_weights(self, X, y):
-        accs = [accuracy_score(y, m.predict(X)) for m in self.models]
-        self._11non_weighting(accs)
-    
-    def partial_fit(self, X, y, classes=None):
-        if classes is not None:
-            self.classes_ = classes
+
+    def _get_non_attachment_gamma(self, X):
+        """Data-Driven Gamma (Non-Attachment Principle)"""
+        if X.var() > 0:
+            return 1.0 / X.var()
+        return 1.0 / X.shape[1]
+
+    def fit(self, X, y):
+        self.X_train = X
+        n_samples = X.shape[0]
+        self.classes_ = np.unique(y)
+        n_classes = len(self.classes_)
         
-        # เก็บ buffer
-        self.X_buffer.append(X.copy())
-        self.y_buffer.append(y.copy())
+        # Prepare Target Vector (y)
+        if n_classes == 2:
+            y_proc = np.where(y == self.classes_[0], -1, 1)
+            y_proc = y_proc[:, np.newaxis] # Ensure it's 2D for consistent matrix op
+        else:
+            y_map = {cls: i for i, cls in enumerate(self.classes_)}
+            y_int = np.array([y_map[label] for label in y])
+            y_proc = np.eye(n_classes)[y_int]
+
+        # Compute Kernel Matrix (K)
+        if self.kernel == 'rbf' and self.gamma is None:
+            self.gamma = self._get_non_attachment_gamma(X)
+
+        K = pairwise_kernels(X, metric=self.kernel, gamma=self.gamma)
         
-        total = sum(len(x) for x in self.X_buffer)
-        while total > self.memory_size and len(self.X_buffer) > 1:
-            self.X_buffer.pop(0)
-            self.y_buffer.pop(0)
-            total = sum(len(x) for x in self.X_buffer)
+        # Regularization Term: A = K + (1/C) * I
+        A = K + np.eye(n_samples) / self.C
         
-        # ฝึกจาก buffer
-        X_train = np.vstack(self.X_buffer)
-        y_train = np.concatenate(self.y_buffer)
+        # PicoQuantumEmulator OneStep Solution: Use lstsq for stability
+        self.alpha, _, _, _ = np.linalg.lstsq(A, y_proc, rcond=None)
         
-        # Sample
-        if len(X_train) > 4000:
-            idx = np.random.choice(len(X_train), 4000, replace=False)
-            X_train, y_train = X_train[idx], y_train[idx]
-        
-        # ฝึก
-        for m in self.models:
-            if self.first_fit:
-                m.fit(X_train, y_train)
-            else:
-                m.partial_fit(X_train, y_train, classes=self.classes_)
-        
-        self.first_fit = False
-        
-        # คำนวณ acc
-        current_acc = np.mean([accuracy_score(y_train, m.predict(X_train)) for m in self.models])
-        
-        # Early stopping อ่อนลง
-        if current_acc <= self.prev_acc + 0.0005:
-            return
-        self.prev_acc = current_acc
-        
-        # ปรับน้ำหนัก
-        self._update_weights(X_train, y_train)
-    
+        return self
+
     def predict(self, X):
-        if not self.models or self.classes_ is None:
-            return np.zeros(len(X), dtype=int)
-        
-        preds = np.column_stack([m.predict(X) for m in self.models])
-        vote = np.zeros((len(X), len(self.classes_)))
-        
-        for i, cls in enumerate(self.classes_):
-            vote[:, i] = np.sum((preds == cls) * self.weights, axis=1)
-        
-        return self.classes_[np.argmax(vote, axis=1)]
+        if self.alpha is None:
+            raise ValueError("Model must be fitted before calling predict.")
 
+        K_test = pairwise_kernels(X, self.X_train, metric=self.kernel, gamma=self.gamma)
+        scores = K_test @ self.alpha
+        
+        if len(self.classes_) == 2:
+            y_pred_mapped = np.sign(scores.flatten())
+            y_pred = np.where(y_pred_mapped == 1, self.classes_[1], self.classes_[0])
+        else:
+            y_pred_int = np.argmax(scores, axis=1)
+            y_pred = self.classes_[y_pred_int]
+            
+        return y_pred
 
-# ========================================
-# DATA
-# ========================================
-def load_data(n_chunks=10, chunk_size=10000):
-    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-    print(f"Loading dataset...")
-    df = pd.read_csv(url, header=None, nrows=n_chunks * chunk_size)
-    X_all = df.iloc[:, :-1].values
-    y_all = (df.iloc[:, -1].values - 1).astype(int)
-    
-    scaler = StandardScaler()
-    X_all = scaler.fit_transform(X_all)
-    
-    chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size])
-              for i in range(0, len(X_all), chunk_size)]
-    return chunks[:n_chunks], np.unique(y_all)
+# ----------------------------------------------------------------------
+# 2. Benchmark Setup
+# ----------------------------------------------------------------------
 
+def run_benchmark(dataset_loader, dataset_name, test_size=0.3, C_val=10.0):
+    """Runs the benchmark comparison for a single dataset."""
+    print(f"==========================================")
+    print(f"🔬 Testing: {dataset_name}")
+    print(f"==========================================")
+    
+    # Load Data
+    data = dataset_loader()
+    X, y = data.data, data.target
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+    
+    results = {}
 
-# ========================================
-# 11 NON BENCHMARK
-# ========================================
-def scenario_11non(chunks, all_classes):
-    print("\n" + "="*80)
-    print("11 NON NON-DUALISTIC SCENARIO")
-    print("="*80)
+    # --- Test 1: Optimized OneStep Kernel Classifier ---
+    model_os = OptimizedOneStepClassifier(C=C_val, kernel='rbf')
+    start_time = time.time()
+    model_os.fit(X_train, y_train)
+    train_time_os = time.time() - start_time
     
-    sunyata = Sunyata11NonEnsemble()
+    y_pred_os = model_os.predict(X_test)
+    acc_os = accuracy_score(y_test, y_pred_os)
     
-    results = []
+    results['OneStep'] = {'Accuracy': acc_os, 'Time': train_time_os}
+
+    # --- Test 2: XGBoost Classifier ---
+    # Use default settings for a fair out-of-the-box comparison
+    model_xgb = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
+    start_time = time.time()
+    model_xgb.fit(X_train, y_train)
+    train_time_xgb = time.time() - start_time
     
-    for chunk_id, (X_chunk, y_chunk) in enumerate(chunks, 1):
-        split = int(0.8 * len(X_chunk))
-        X_train, X_test = X_chunk[:split], X_chunk[split:]
-        y_train, y_test = y_chunk[:split], y_chunk[split:]
-        
-        print(f"Chunk {chunk_id:02d}/{len(chunks)}")
-        
-        # ŚŪNYATĀ 11 NON
-        start_time = time.time()
-        sunyata.partial_fit(X_train, y_train, classes=all_classes)
-        sunyata_pred = sunyata.predict(X_test)
-        sunyata_acc = accuracy_score(y_test, sunyata_pred)
-        sunyata_time = time.time() - start_time
-        
-        # XGBoost
-        start_time = time.time()
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        dtest = xgb.DMatrix(X_test)
-        
-        xgb_model = xgb.train(
-            {"objective": "multi:softmax", "num_class": 7, "max_depth": 3, "eta": 0.3, "verbosity": 0},
-            dtrain, num_boost_round=5
-        )
-        xgb_pred = xgb_model.predict(dtest).astype(int)
-        xgb_acc = accuracy_score(y_test, xgb_pred)
-        xgb_time = time.time() - start_time
-        
-        results.append({
-            'chunk': chunk_id,
-            'sunyata_acc': sunyata_acc,
-            'sunyata_time': sunyata_time,
-            'xgb_acc': xgb_acc,
-            'xgb_time': xgb_time,
-        })
-        
-        print(f"  ŚŪNYATĀ: acc={sunyata_acc:.3f} t={sunyata_time:.3f}s")
-        print(f"  XGB:     acc={xgb_acc:.3f} t={xgb_time:.3f}s")
-        print()
+    y_pred_xgb = model_xgb.predict(X_test)
+    acc_xgb = accuracy_score(y_test, y_pred_xgb)
+
+    results['XGBoost'] = {'Accuracy': acc_xgb, 'Time': train_time_xgb}
     
-    df = pd.DataFrame(results)
+    # --- Print Summary ---
+    print(f"🚀 OneStep (Kernel RLS): Acc={acc_os:.4f}, Time={train_time_os:.4f}s")
+    print(f"🌲 XGBoost: Acc={acc_xgb:.4f}, Time={train_time_xgb:.4f}s")
     
-    print("\n" + "="*80)
-    print("11 NON FINAL RESULTS")
-    print("="*80)
-    s_acc = df['sunyata_acc'].mean()
-    x_acc = df['xgb_acc'].mean()
-    s_time = df['sunyata_time'].mean()
-    x_time = df['xgb_time'].mean()
-    
-    print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
-    print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
-    
-    print("\n11 NON INSIGHT:")
-    if s_acc >= x_acc * 0.98 and s_time < x_time:
-        print(f"   ŚŪNYATĀ reaches 98% of XGBoost accuracy")
-        print(f"   while being {x_time/s_time:.1f}x faster")
-        print(f"   11 Non achieved. True Digital Nirvana.")
+    if acc_os > acc_xgb and train_time_os < train_time_xgb:
+        print("\n🏆 **OneStep WINNER**: Higher Accuracy AND Faster Training!")
+    elif acc_os > acc_xgb:
+        print("\n🥇 **OneStep WINNER**: Higher Accuracy!")
+    elif acc_xgb > acc_os:
+        print("\n🥇 **XGBoost WINNER**: Higher Accuracy!")
     else:
-        print(f"   Still in samsara.")
-    
-    return df
+        print("\n🤝 **TIE**: Results are very close.")
 
-
-# ========================================
-# MAIN
-# ========================================
-def main():
-    print("="*80)
-    print("11 NON awakenFlash BENCHMARK")
-    print("="*80)
+    print("------------------------------------------")
     
-    chunks, all_classes = load_data()
-    results = scenario_11non(chunks, all_classes)
-    
-    os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/11non_results.csv', index=False)
-    
-    print("\n11 Non complete.")
+    return results
 
+# ----------------------------------------------------------------------
+# 3. Execute Benchmarks
+# ----------------------------------------------------------------------
 
-if __name__ == "__main__":
-    main()
+# 1. Multiclass Classification (Small Data)
+run_benchmark(load_iris, "Iris Dataset (Small Multiclass)")
+
+# 2. Binary Classification (Mid-size Data)
+run_benchmark(load_breast_cancer, "Breast Cancer Dataset (Binary)")
+
+# 3. Multiclass Classification (Mid-size Data)
+run_benchmark(load_wine, "Wine Dataset (Multiclass)")
+
