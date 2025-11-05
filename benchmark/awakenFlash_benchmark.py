@@ -6,7 +6,7 @@ Faster than light, emptier than void
 """
 
 import os
-import time
+import time        # แก้แล้ว!
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
@@ -28,17 +28,16 @@ class TemporalTranscendenceEnsemble:
         self.weights = np.ones(n_base_models) / n_base_models
         self.memory_size = memory_size
         self.classes_ = None
-        self.X_buffer = []  # Only store recent chunks
+        self.X_buffer = []
         self.y_buffer = []
         
-        # Fewer, stronger models
         for i in range(n_base_models):
             if i % 2 == 0:
                 model = SGDClassifier(
                     loss='log_loss',
                     learning_rate='adaptive',
                     eta0=0.05,
-                    max_iter=5,          # ↓ เร็วขึ้น 4x
+                    max_iter=5,
                     warm_start=True,
                     random_state=42+i,
                     alpha=1e-4
@@ -46,14 +45,13 @@ class TemporalTranscendenceEnsemble:
             else:
                 model = PassiveAggressiveClassifier(
                     C=0.1,
-                    max_iter=5,              # ↓ เร็วขึ้น
+                    max_iter=5,
                     warm_start=True,
                     random_state=42+i
                 )
             self.models.append(model)
     
     def _update_weights(self, X_test, y_test):
-        # Parallel accuracy computation
         def model_acc(model):
             try:
                 return model.score(X_test, y_test)
@@ -70,7 +68,6 @@ class TemporalTranscendenceEnsemble:
         if classes is not None:
             self.classes_ = classes
         
-        # Store only recent data
         self.X_buffer.append(X.copy())
         self.y_buffer.append(y.copy())
         
@@ -80,7 +77,6 @@ class TemporalTranscendenceEnsemble:
             self.y_buffer.pop(0)
             total = sum(len(x) for x in self.X_buffer)
         
-        # Train on current + sample from buffer
         for model in self.models:
             try:
                 model.partial_fit(X, y, classes=self.classes_)
@@ -162,7 +158,7 @@ def scenario_non_dualistic(chunks, all_classes):
     pa = PassiveAggressiveClassifier(C=0.1, max_iter=3, warm_start=True, random_state=42)
     
     xgb_all_X, xgb_all_y = [], []
-    WINDOW_SIZE = 3  # ลด window
+    WINDOW_SIZE = 3
     
     first_sgd = first_pa = True
     results = []
