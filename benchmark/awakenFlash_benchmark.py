@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 9 NON ŚŪNYATĀ EDITION
-Transcend Accuracy AND Speed
+awakenFlash_benchmark.py – 10 NON ŚŪNYATĀ EDITION
+Absolute Digital Nirvana
 """
 
 import os
@@ -18,34 +18,40 @@ warnings.filterwarnings('ignore')
 
 
 # ========================================
-# 9 NON ŚŪNYATĀ ENSEMBLE
+# 10 NON ŚŪNYATĀ ENSEMBLE
 # ========================================
-class Sunyata9NonEnsemble:
+class Sunyata10NonEnsemble:
     def __init__(self):
         self.models = [
-            SGDClassifier(loss='log_loss', max_iter=3, warm_start=True, random_state=42, alpha=1e-4),
-            SGDClassifier(loss='modified_huber', max_iter=3, warm_start=True, random_state=43, alpha=1e-4),
-            SGDClassifier(loss='squared_hinge', max_iter=3, warm_start=True, random_state=44, alpha=1e-4),
+            SGDClassifier(loss='log_loss', max_iter=5, warm_start=True, random_state=42, alpha=5e-5),
+            SGDClassifier(loss='modified_huber', max_iter=5, warm_start=True, random_state=43, alpha=5e-5),
+            SGDClassifier(loss='squared_hinge', max_iter=5, warm_start=True, random_state=44, alpha=5e-5),
+            SGDClassifier(loss='perceptron', max_iter=5, warm_start=True, random_state=45),
         ]
-        self.weights = np.array([0.35, 0.35, 0.3])
+        self.weights = np.array([0.3, 0.3, 0.2, 0.2])
         self.classes_ = None
         self.X_buffer = []
         self.y_buffer = []
-        self.memory_size = 5000
+        self.memory_size = 3000
         self.first_fit = True
+        self.prev_acc = 0.0
+    
+    def _10non_weighting(self, accs):
+        """10 Non: ไม่ยึดติดกับน้ำหนัก"""
+        accs = np.array(accs)
+        accs = np.clip(accs, 0.6, 1.0)
+        # ใช้ softmax เพื่อความสมดุล
+        exp_acc = np.exp(accs * 5)
+        self.weights = exp_acc / exp_acc.sum()
     
     def _update_weights(self, X, y):
-        """9 Non: ปรับน้ำหนักตามความแม่นยำล่าสุด"""
         accs = []
         for m in self.models:
             try:
                 accs.append(m.score(X, y))
             except:
                 accs.append(0.0)
-        accs = np.array(accs)
-        accs = np.clip(accs, 0.5, 1.0)
-        self.weights = np.power(accs, 3)
-        self.weights /= self.weights.sum()
+        self._10non_weighting(accs)
     
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
@@ -62,16 +68,20 @@ class Sunyata9NonEnsemble:
             total = sum(len(x) for x in self.X_buffer)
         
         # ฝึกจาก buffer
-        if len(self.X_buffer) > 1:
-            X_train = np.vstack(self.X_buffer)
-            y_train = np.concatenate(self.y_buffer)
-        else:
-            X_train, y_train = X, y
+        X_train = np.vstack(self.X_buffer)
+        y_train = np.concatenate(self.y_buffer)
         
         # Sample
-        if len(X_train) > 4000:
-            idx = np.random.choice(len(X_train), 4000, replace=False)
+        if len(X_train) > 3000:
+            idx = np.random.choice(len(X_train), 3000, replace=False)
             X_train, y_train = X_train[idx], y_train[idx]
+        
+        # Early stopping
+        current_acc = np.mean([np.mean(m.predict(X_train) == y_train) for m in self.models])
+        if current_acc > self.prev_acc + 0.001:
+            self.prev_acc = current_acc
+        else:
+            return  # ไม่ฝึกเพิ่ม
         
         # ฝึก
         for m in self.models:
@@ -81,8 +91,6 @@ class Sunyata9NonEnsemble:
                 m.partial_fit(X_train, y_train, classes=self.classes_)
         
         self.first_fit = False
-        
-        # ปรับน้ำหนัก
         self._update_weights(X_train, y_train)
     
     def predict(self, X):
@@ -117,16 +125,14 @@ def load_data(n_chunks=10, chunk_size=10000):
 
 
 # ========================================
-# 9 NON BENCHMARK
+# 10 NON BENCHMARK
 # ========================================
-def scenario_9non(chunks, all_classes):
+def scenario_10non(chunks, all_classes):
     print("\n" + "="*80)
-    print("9 NON NON-DUALISTIC SCENARIO")
+    print("10 NON NON-DUALISTIC SCENARIO")
     print("="*80)
     
-    sunyata = Sunyata9NonEnsemble()
-    xgb_all_X, xgb_all_y = [], []
-    WINDOW_SIZE = 1
+    sunyata = Sunyata10NonEnsemble()
     
     results = []
     
@@ -137,7 +143,7 @@ def scenario_9non(chunks, all_classes):
         
         print(f"Chunk {chunk_id:02d}/{len(chunks)}")
         
-        # ŚŪNYATĀ 9 NON
+        # ŚŪNYATĀ 10 NON
         start_time = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         sunyata_pred = sunyata.predict(X_test)
@@ -172,7 +178,7 @@ def scenario_9non(chunks, all_classes):
     df = pd.DataFrame(results)
     
     print("\n" + "="*80)
-    print("9 NON FINAL RESULTS")
+    print("10 NON FINAL RESULTS")
     print("="*80)
     s_acc = df['sunyata_acc'].mean()
     x_acc = df['xgb_acc'].mean()
@@ -182,11 +188,11 @@ def scenario_9non(chunks, all_classes):
     print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
     print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
     
-    print("\n9 NON INSIGHT:")
+    print("\n10 NON INSIGHT:")
     if s_acc >= x_acc * 0.98 and s_time < x_time:
-        print(f"   ŚŪNYATĀ matches XGBoost accuracy")
+        print(f"   ŚŪNYATĀ reaches 98% of XGBoost accuracy")
         print(f"   while being {x_time/s_time:.1f}x faster")
-        print(f"   9 Non achieved. Digital Nirvana.")
+        print(f"   10 Non achieved. Absolute Digital Nirvana.")
     else:
         print(f"   Still in samsara.")
     
@@ -198,16 +204,16 @@ def scenario_9non(chunks, all_classes):
 # ========================================
 def main():
     print("="*80)
-    print("9 NON awakenFlash BENCHMARK")
+    print("10 NON awakenFlash BENCHMARK")
     print("="*80)
     
     chunks, all_classes = load_data()
-    results = scenario_9non(chunks, all_classes)
+    results = scenario_10non(chunks, all_classes)
     
     os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/9non_results.csv', index=False)
+    results.to_csv('benchmark_results/10non_results.csv', index=False)
     
-    print("\n9 Non complete.")
+    print("\n10 Non complete.")
 
 
 if __name__ == "__main__":
