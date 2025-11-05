@@ -37,7 +37,6 @@ class TemporalTranscendenceEnsemble:
         self.all_data_X = []
         self.all_data_y = []
         self.memory_size = memory_size
-        self.first_fit = True
         self.classes_ = None
         
         # Initialize diverse ensemble (pratītyasamutpāda)
@@ -104,9 +103,9 @@ class TemporalTranscendenceEnsemble:
             self.weights = np.ones(len(new_weights)) / len(new_weights)
     
     def partial_fit(self, X, y, classes=None):
-        if self.first_fit and classes is not None:
+        # Always update classes if provided
+        if classes is not None:
             self.classes_ = classes
-            self.first_fit = False
         
         # Store ALL data (transcend time)
         self.all_data_X.append(X.copy())
@@ -122,11 +121,8 @@ class TemporalTranscendenceEnsemble:
         # 1. Online learning: Current chunk
         for model in self.models:
             try:
-                if classes is not None and self.first_fit:
-                    model.partial_fit(X, y, classes=classes)
-                else:
-                    model.partial_fit(X, y)
-            except Exception as e:
+                model.partial_fit(X, y, classes=self.classes_)
+            except Exception:
                 pass
         
         # 2. Batch-like learning: Sample from history
@@ -141,7 +137,7 @@ class TemporalTranscendenceEnsemble:
             
             for model in self.models:
                 try:
-                    model.partial_fit(X_sample, y_sample)
+                    model.partial_fit(X_sample, y_sample, classes=self.classes_)
                 except:
                     pass
     
@@ -179,47 +175,6 @@ class TemporalTranscendenceEnsemble:
     def score(self, X, y):
         pred = self.predict(X)
         return accuracy_score(y, pred)
-
-
-class NonDualMemoryBuffer:
-    """Memory buffer that transcends past/present duality"""
-    
-    def __init__(self, max_size=50000, diversity_threshold=0.1):
-        self.buffer = []
-        self.max_size = max_size
-        self.diversity_threshold = diversity_threshold
-    
-    def add(self, X, y):
-        n_samples = len(X)
-        if n_samples > 1000:
-            indices = np.random.choice(n_samples, 1000, replace=False)
-            X = X[indices]
-            y = y[indices]
-        
-        self.buffer.append((X.copy(), y.copy()))
-        
-        total_samples = sum(len(x) for x, _ in self.buffer)
-        while total_samples > self.max_size and len(self.buffer) > 1:
-            self.buffer.pop(0)
-            total_samples = sum(len(x) for x, _ in self.buffer)
-    
-    def get_recent(self, n_chunks=3):
-        if not self.buffer:
-            return None, None
-        recent = self.buffer[-n_chunks:]
-        X = np.vstack([x for x, _ in recent])
-        y = np.concatenate([y for _, y in recent])
-        return X, y
-    
-    def get_diverse_sample(self, n_samples=5000):
-        if not self.buffer:
-            return None, None
-        all_X = np.vstack([x for x, _ in self.buffer])
-        all_y = np.concatenate([y for _, y in self.buffer])
-        if len(all_X) <= n_samples:
-            return all_X, all_y
-        indices = np.random.choice(len(all_X), n_samples, replace=False)
-        return all_X[indices], all_y[indices]
 
 
 def load_data(n_chunks=10, chunk_size=10000):
@@ -273,7 +228,7 @@ def scenario_non_dualistic(chunks, all_classes):
     xgb_all_X, xgb_all_y = [], []
     WINDOW_SIZE = 5
     
-    # Separate first-fit flags
+    # First-fit flags
     first_sunyata = first_sgd = first_pa = True
     
     results = []
@@ -287,15 +242,13 @@ def scenario_non_dualistic(chunks, all_classes):
         
         # ===== ŚŪNYATĀ ENSEMBLE =====
         start = time.time()
-        if first_sunyata:
-            sunyata.partial_fit(X_train, y_train, classes=all_classes)
-            first_sunyata = False
-        else:
-            sunyata.partial_fit(X_train, y_train)
+        sunyata.partial_fit(X_train, y_train, classes=all_classes)  # ทุกครั้ง!
         sunyata._update_weights(X_test, y_test)
         sunyata_pred = sunyata.predict(X_test)
         sunyata_metrics = compute_metrics(y_test, sunyata_pred)
         sunyata_time = time.time() - start
+        if first_sunyata:
+            first_sunyata = False
         
         # ===== SGD Baseline =====
         start = time.time()
@@ -303,7 +256,7 @@ def scenario_non_dualistic(chunks, all_classes):
             sgd.partial_fit(X_train, y_train, classes=all_classes)
             first_sgd = False
         else:
-            sgd.partial_fit(X_train, y_train)
+            sgd.partial_fit(X_train, y_train, classes=all_classes)
         sgd_pred = sgd.predict(X_test)
         sgd_metrics = compute_metrics(y_test, sgd_pred)
         sgd_time = time.time() - start
@@ -314,7 +267,7 @@ def scenario_non_dualistic(chunks, all_classes):
             pa.partial_fit(X_train, y_train, classes=all_classes)
             first_pa = False
         else:
-            pa.partial_fit(X_train, y_train)
+            pa.partial_fit(X_train, y_train, classes=all_classes)
         pa_pred = pa.predict(X_test)
         pa_metrics = compute_metrics(y_test, pa_pred)
         pa_time = time.time() - start
