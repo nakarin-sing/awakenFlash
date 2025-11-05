@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark.py – OPTIMIZED ŚŪNYATĀ EDITION
-Faster than light, emptier than void
+No more UnboundLocalError, no more attachment to time
 """
 
 import os
-import time        # ต้องมีบรรทัดนี้เสมอ!
+import time        # ต้องมี!
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
@@ -109,9 +109,6 @@ class TemporalTranscendenceEnsemble:
                 vote[:, i] += (pred == cls) * w
         
         return self.classes_[np.argmax(vote, axis=1)]
-    
-    def score(self, X, y):
-        return accuracy_score(y, self.predict(X))
 
 
 # ========================================
@@ -171,15 +168,15 @@ def scenario_non_dualistic(chunks, all_classes):
         print(f"Chunk {chunk_id:02d}/{len(chunks)} | Train: {len(X_train)}, Test: {len(X_test)}")
         
         # ŚŪNYATĀ
-        start = time.time()
+        start_time = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         sunyata._update_weights(X_test, y_test)
         sunyata_pred = sunyata.predict(X_test)
         sunyata_metrics = compute_metrics(y_test, sunyata_pred)
-        sunyata_time = time.time() - start
+        sunyata_time = time.time() - start_time
         
         # SGD
-        start = time.time()
+        start_time = time.time()
         if first_sgd:
             sgd.partial_fit(X_train, y_train, classes=all_classes)
             first_sgd = False
@@ -187,10 +184,10 @@ def scenario_non_dualistic(chunks, all_classes):
             sgd.partial_fit(X_train, y_train, classes=all_classes)
         sgd_pred = sgd.predict(X_test)
         sgd_metrics = compute_metrics(y_test, sgd_pred)
-        sgd_time = time.time() - start
+        sgd_time = time.time() - start_time
         
         # PA
-        start = time.time()
+        start_time = time.time()
         if first_pa:
             pa.partial_fit(X_train, y_train, classes=all_classes)
             first_pa = False
@@ -198,10 +195,10 @@ def scenario_non_dualistic(chunks, all_classes):
             pa.partial_fit(X_train, y_train, classes=all_classes)
         pa_pred = pa.predict(X_test)
         pa_metrics = compute_metrics(y_test, pa_pred)
-        pa_time = time.time() - start
+        pa_time = time.time() - start_time
         
         # XGBoost
-        start = time.time()
+        start_time = time.time()
         xgb_all_X.append(X_train)
         xgb_all_y.append(y_train)
         if len(xgb_all_X) > WINDOW_SIZE:
@@ -220,7 +217,7 @@ def scenario_non_dualistic(chunks, all_classes):
         )
         xgb_pred = xgb_model.predict(dtest).astype(int)
         xgb_metrics = compute_metrics(y_test, xgb_pred)
-        xgb_time = time.time() - start
+        xgb_time = time.time() - start_time
         
         results.append({
             'chunk': chunk_id,
@@ -250,8 +247,8 @@ def scenario_non_dualistic(chunks, all_classes):
     print("="*80)
     for model in ['sunyata', 'pa', 'xgb']:
         acc = df_results[f'{model}_acc'].mean()
-        time = df_results[f'{model}_time'].mean()
-        print(f"{model.upper():8s}: Acc={acc:.4f} | Time={time:.4f}s")
+        elapsed = df_results[f'{model}_time'].mean()
+        print(f"{model.upper():8s}: Acc={acc:.4f} | Time={elapsed:.4f}s")
     
     sunyata_acc = df_results['sunyata_acc'].mean()
     xgb_acc = df_results['xgb_acc'].mean()
