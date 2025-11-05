@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark.py – 10 NON ŚŪNYATĀ EDITION
-Absolute Digital Nirvana
+Absolute Digital Nirvana (Fixed)
 """
 
 import os
@@ -37,20 +37,13 @@ class Sunyata10NonEnsemble:
         self.prev_acc = 0.0
     
     def _10non_weighting(self, accs):
-        """10 Non: ไม่ยึดติดกับน้ำหนัก"""
         accs = np.array(accs)
         accs = np.clip(accs, 0.6, 1.0)
-        # ใช้ softmax เพื่อความสมดุล
         exp_acc = np.exp(accs * 5)
         self.weights = exp_acc / exp_acc.sum()
     
     def _update_weights(self, X, y):
-        accs = []
-        for m in self.models:
-            try:
-                accs.append(m.score(X, y))
-            except:
-                accs.append(0.0)
+        accs = [accuracy_score(y, m.predict(X)) for m in self.models]
         self._10non_weighting(accs)
     
     def partial_fit(self, X, y, classes=None):
@@ -76,14 +69,7 @@ class Sunyata10NonEnsemble:
             idx = np.random.choice(len(X_train), 3000, replace=False)
             X_train, y_train = X_train[idx], y_train[idx]
         
-        # Early stopping
-        current_acc = np.mean([np.mean(m.predict(X_train) == y_train) for m in self.models])
-        if current_acc > self.prev_acc + 0.001:
-            self.prev_acc = current_acc
-        else:
-            return  # ไม่ฝึกเพิ่ม
-        
-        # ฝึก
+        # ฝึกก่อน
         for m in self.models:
             if self.first_fit:
                 m.fit(X_train, y_train)
@@ -91,6 +77,16 @@ class Sunyata10NonEnsemble:
                 m.partial_fit(X_train, y_train, classes=self.classes_)
         
         self.first_fit = False
+        
+        # คำนวณ acc หลังฝึก
+        current_acc = np.mean([accuracy_score(y_train, m.predict(X_train)) for m in self.models])
+        
+        # Early stopping
+        if current_acc <= self.prev_acc + 0.001:
+            return
+        self.prev_acc = current_acc
+        
+        # ปรับน้ำหนัก
         self._update_weights(X_train, y_train)
     
     def predict(self, X):
