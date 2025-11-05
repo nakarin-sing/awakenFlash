@@ -6,7 +6,7 @@ Faster than light, emptier than void
 """
 
 import os
-import time        # แก้แล้ว!
+import time        # ต้องมีบรรทัดนี้เสมอ!
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
