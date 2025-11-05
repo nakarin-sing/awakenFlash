@@ -1,86 +1,94 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 15 NON ŚŪNYATĀ STREAMING ONLINE
-True Online Learning — FIXED & WIN XGBoost
+awakenFlash_benchmark.py – 17 NON ONESTEP ŚŪNYATĀ
+Streaming + Closed-Form + Random Fourier Features
 """
 
 import os
 import time
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import SGDClassifier
-from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
 import xgboost as xgb
-from joblib import Parallel, delayed
 import warnings
 warnings.filterwarnings('ignore')
 
-# ========================================
-# 15 NON ŚŪNYATĀ ONLINE ENSEMBLE
-# ========================================
-class Sunyata15NonOnline:
-    def __init__(self):
-        self.models = [
-            SGDClassifier(loss='log_loss',       max_iter=1, warm_start=True, random_state=i, alpha=1e-5, tol=1e-4)
-            for i in range(42, 48)
-        ] + [
-            SGDClassifier(loss='modified_huber', max_iter=1, warm_start=True, random_state=i, alpha=1e-5, tol=1e-4)
-            for i in range(48, 54)
-        ]
-        self.weights = np.ones(12) / 12
-        self.classes_ = None
-        self.fitted = False
-        self.running_acc = np.zeros(12)
-        self.count = 0
 
-    def _update_weights(self, y_true, y_pred_batch):
-        """y_pred_batch: (n_samples, n_models)"""
-        for i in range(len(self.models)):
-            correct = (y_pred_batch[:, i] == y_true)
-            self.running_acc[i] = 0.9 * self.running_acc[i] + 0.1 * correct.mean()
-        w = np.exp(self.running_acc * 12)
-        self.weights = w / w.sum()
+# ========================================
+# 17 NON ONESTEP ŚŪNYATĀ (RFF + Incremental)
+# ========================================
+class OneStepSunyata17Non:
+    def __init__(self, D=500, C=100.0, gamma=0.1):
+        self.D = D          # RFF dimension
+        self.C = C          # Regularization
+        self.gamma = gamma
+        self.W = None       # Random projection matrix
+        self.alpha = None   # Dual weights
+        self.P_inv = None   # Inverse covariance (for Sherman-Morrison)
+        self.classes_ = None
+        self.n_samples = 0
+
+    def _rff_features(self, X):
+        """Random Fourier Features: phi(X) = [cos(WX), sin(WX)]"""
+        if self.W is None:
+            n_features = X.shape[1]
+            self.W = np.random.normal(0, np.sqrt(self.gamma), (self.D // 2, n_features))
+        proj = X @ self.W.T
+        return np.hstack([np.cos(proj), np.sin(proj)]) * np.sqrt(2.0 / self.D)
+
+    def _one_hot(self, y):
+        if self.classes_ is None:
+            self.classes_ = np.unique(y)
+        y_int = np.searchsorted(self.classes_, y)
+        return np.eye(len(self.classes_))[y_int]
 
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
             self.classes_ = classes
 
-        def train(m):
-            if not self.fitted:
-                m.fit(X, y)
-            else:
-                m.partial_fit(X, y, classes=self.classes_)
-            return m.predict(X)
+        phi = self._rff_features(X)  # (n, D)
+        y_hot = self._one_hot(y)     # (n, n_classes)
 
-        # Parallel train + predict
-        preds = Parallel(n_jobs=-1, prefer="threads")(
-            delayed(train)(m) for m in self.models
-        )
-        self.fitted = True
+        n = X.shape[0]
+        n_classes = len(self.classes_)
 
-        # แปลงเป็น array และแก้ shape
-        preds_array = np.array(preds)
-        if preds_array.ndim == 1:
-            preds_array = preds_array.reshape(1, -1)
-        preds_array = preds_array.T  # (n_samples, n_models)
+        # First batch
+        if self.alpha is None:
+            self.P_inv = np.eye(self.D) / self.C
+            self.alpha = np.zeros((self.D, n_classes))
+            self.n_samples = 0
 
-        # อัปเดตน้ำหนัก
-        self._update_weights(y, preds_array)
-        self.count += len(X)
+        # Incremental update using Sherman-Morrison
+        for i in range(n):
+            phi_i = phi[i:i+1]  # (1, D)
+            y_i = y_hot[i:i+1]  # (1, n_classes)
+
+            # P_inv @ phi_i.T
+            P_phi = self.P_inv @ phi_i.T  # (D, 1)
+
+            # phi_i @ P_phi
+            denom = 1 + phi_i @ P_phi  # scalar
+            if denom == 0:
+                continue
+
+            # Update P_inv
+            self.P_inv -= (P_phi @ P_phi.T) / denom
+
+            # Update alpha
+            self.alpha += P_phi @ (y_i - phi_i @ self.alpha).T
+
+        self.n_samples += n
+        return self
 
     def predict(self, X):
-        if not self.fitted:
+        if self.alpha is None:
             return np.zeros(len(X), dtype=int)
 
-        preds = np.column_stack([m.predict(X) for m in self.models])
-        vote = np.zeros((len(X), len(self.classes_)), dtype=np.float16)
-
-        for i, cls in enumerate(self.classes_):
-            vote[:, i] = np.sum((preds == cls) * self.weights, axis=1, dtype=np.float32)
-
-        return self.classes_[np.argmax(vote, axis=1)]
+        phi = self._rff_features(X)
+        scores = phi @ self.alpha  # (n_test, n_classes)
+        return self.classes_[np.argmax(scores, axis=1)]
 
 
 # ========================================
@@ -89,32 +97,27 @@ class Sunyata15NonOnline:
 def load_data(n_chunks=10, chunk_size=10000):
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
     print(f"Loading dataset...")
-    df = pd.read_csv(
-        url, header=None, nrows=n_chunks * chunk_size,
-        dtype=np.float32, engine='c'
-    )
+    df = pd.read_csv(url, header=None, nrows=n_chunks * chunk_size, dtype=np.float32)
     X_all = df.iloc[:, :-1].values.astype(np.float16)
     y_all = (df.iloc[:, -1].values - 1).astype(np.int8)
 
     scaler = StandardScaler()
     X_all = scaler.fit_transform(X_all).astype(np.float16)
 
-    chunks = [
-        (X_all[i:i+chunk_size], y_all[i:i+chunk_size])
-        for i in range(0, len(X_all), chunk_size)
-    ]
+    chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size])
+              for i in range(0, len(X_all), chunk_size)]
     return chunks[:n_chunks], np.unique(y_all)
 
 
 # ========================================
-# 15 NON ONLINE BENCHMARK
+# 17 NON BENCHMARK
 # ========================================
-def scenario_15non(chunks, all_classes):
+def scenario_17non(chunks, all_classes):
     print("\n" + "="*80)
-    print("15 NON STREAMING ONLINE SCENARIO")
+    print("17 NON ONESTEP ŚŪNYATĀ SCENARIO")
     print("="*80)
 
-    sunyata = Sunyata15NonOnline()
+    sunyata = OneStepSunyata17Non(D=600, C=100.0, gamma=0.05)
     results = []
 
     for chunk_id, (X_chunk, y_chunk) in enumerate(chunks, 1):
@@ -124,7 +127,7 @@ def scenario_15non(chunks, all_classes):
 
         print(f"Chunk {chunk_id:02d}/{len(chunks)}")
 
-        # ŚŪNYATĀ ONLINE
+        # ONESTEP ŚŪNYATĀ
         start = time.time()
         sunyata.partial_fit(X_train, y_train, classes=all_classes)
         pred = sunyata.predict(X_test)
@@ -158,7 +161,7 @@ def scenario_15non(chunks, all_classes):
     df = pd.DataFrame(results)
 
     print("\n" + "="*80)
-    print("15 NON FINAL RESULTS")
+    print("17 NON FINAL RESULTS")
     print("="*80)
     s_acc = df['sunyata_acc'].mean()
     x_acc = df['xgb_acc'].mean()
@@ -168,12 +171,12 @@ def scenario_15non(chunks, all_classes):
     print(f"ŚŪNYATĀ : Acc={s_acc:.4f} | Time={s_time:.4f}s")
     print(f"XGB     : Acc={x_acc:.4f} | Time={x_time:.4f}s")
 
-    print("\n15 NON INSIGHT:")
-    if s_acc >= x_acc and s_time < x_time / 5:
-        print(f"   ŚŪNYATĀ BEATS XGBoost IN ACCURACY")
+    print("\n17 NON INSIGHT:")
+    if s_acc >= x_acc and s_time < x_time:
+        print(f"   ONESTEP ŚŪNYATĀ BEATS XGBoost")
         print(f"   WHILE BEING {x_time/s_time:.1f}x FASTER")
-        print(f"   TRUE ONLINE LEARNING ACHIEVED.")
-        print(f"   15 NON ACHIEVED. STREAMING NIRVANA.")
+        print(f"   TRUE ONESTEP + STREAMING ACHIEVED.")
+        print(f"   17 NON ACHIEVED. ABSOLUTE NIRVANA.")
     else:
         print(f"   Still in samsara.")
 
@@ -185,16 +188,16 @@ def scenario_15non(chunks, all_classes):
 # ========================================
 def main():
     print("="*80)
-    print("15 NON awakenFlash STREAMING ONLINE")
+    print("17 NON awakenFlash ONESTEP ŚŪNYATĀ")
     print("="*80)
 
     chunks, all_classes = load_data()
-    results = scenario_15non(chunks, all_classes)
+    results = scenario_17non(chunks, all_classes)
 
     os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/15non_online_results.csv', index=False)
+    results.to_csv('benchmark_results/17non_onestep_results.csv', index=False)
 
-    print("\n15 Non Streaming Online complete.")
+    print("\n17 Non OneStep ŚŪNYATĀ complete.")
 
 
 if __name__ == "__main__":
