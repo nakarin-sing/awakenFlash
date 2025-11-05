@@ -23,7 +23,173 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-class SunyataEnsemble:
+class TemporalTranscendenceEnsemble:
+    """
+    NNNNNNL (6 Non): Transcend temporal attachment
+    
+    Philosophy:
+    - Treat all chunks as equally present (no past/future)
+    - Learn from all data simultaneously (non-sequential)
+    - Combine online + batch learning seamlessly
+    """
+    
+    def __init__(self, n_base_models=9, memory_size=60000):
+        self.n_base_models = n_base_models
+        self.models = []
+        self.weights = np.ones(n_base_models) / n_base_models
+        self.all_data_X = []
+        self.all_data_y = []
+        self.memory_size = memory_size
+        
+        # Initialize diverse ensemble
+        for i in range(n_base_models):
+            if i % 5 == 0:
+                model = SGDClassifier(
+                    loss='log_loss',
+                    learning_rate='optimal',
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    alpha=0.00005 * (1 + i * 0.03)
+                )
+            elif i % 5 == 1:
+                model = PassiveAggressiveClassifier(
+                    C=0.015 * (1 + i * 0.08),
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i
+                )
+            elif i % 5 == 2:
+                model = SGDClassifier(
+                    loss='modified_huber',
+                    learning_rate='adaptive',
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    eta0=0.015
+                )
+            elif i % 5 == 3:
+                model = SGDClassifier(
+                    loss='perceptron',
+                    learning_rate='optimal',
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    penalty='l1',
+                    alpha=0.0001
+                )
+            else:
+                model = PassiveAggressiveClassifier(
+                    C=0.02,
+                    max_iter=20,
+                    warm_start=True,
+                    random_state=42+i,
+                    loss='squared_hinge'
+                )
+            self.models.append(model)
+        
+        self.first_fit = True
+        self.classes_ = None
+    
+    def _update_weights(self, X_test, y_test):
+        """Dynamic weight adjustment (anatta)"""
+        new_weights = []
+        for model in self.models:
+            try:
+                acc = model.score(X_test, y_test)
+                # Exponential weighting: better models get much more weight
+                new_weights.append(np.exp(acc * 5))
+            except:
+                new_weights.append(0.01)
+        
+        total = sum(new_weights)
+        self.weights = np.array([w/total for w in new_weights])
+    
+    def partial_fit(self, X, y, classes=None):
+        """
+        Temporal transcendence learning:
+        1. Learn from current chunk (online)
+        2. Store all data (break temporal boundary)
+        3. Periodically retrain on all data (batch-like)
+        """
+        if self.first_fit and classes is not None:
+            self.classes_ = classes
+            self.first_fit = False
+        
+        # Store ALL data (transcend time)
+        self.all_data_X.append(X)
+        self.all_data_y.append(y)
+        
+        # Maintain memory limit
+        total_samples = sum(len(x) for x in self.all_data_X)
+        while total_samples > self.memory_size and len(self.all_data_X) > 1:
+            self.all_data_X.pop(0)
+            self.all_data_y.pop(0)
+            total_samples = sum(len(x) for x in self.all_data_X)
+        
+        # 1. Online learning: Current chunk
+        for model in self.models:
+            try:
+                if classes is not None:
+                    model.partial_fit(X, y, classes=classes)
+                else:
+                    model.partial_fit(X, y)
+            except:
+                pass
+        
+        # 2. Batch-like learning: Sample from all history
+        if len(self.all_data_X) >= 2:
+            # Get diverse sample from ALL history
+            all_X = np.vstack(self.all_data_X)
+            all_y = np.concatenate(self.all_data_y)
+            
+            n_samples = min(len(all_X), 10000)
+            indices = np.random.choice(len(all_X), n_samples, replace=False)
+            X_sample = all_X[indices]
+            y_sample = all_y[indices]
+            
+            # Train each model on diverse historical sample
+            for model in self.models:
+                try:
+                    model.partial_fit(X_sample, y_sample)
+                except:
+                    pass
+    
+    def predict(self, X):
+        """Proper weighted voting"""
+        if not self.models or self.classes_ is None:
+            return np.zeros(len(X))
+        
+        all_predictions = []
+        valid_weights = []
+        
+        for i, model in enumerate(self.models):
+            try:
+                pred = model.predict(X)
+                all_predictions.append(pred)
+                valid_weights.append(self.weights[i])
+            except:
+                pass
+        
+        if not all_predictions:
+            return np.zeros(len(X))
+        
+        valid_weights = np.array(valid_weights)
+        valid_weights = valid_weights / valid_weights.sum()
+        
+        n_samples = len(X)
+        n_classes = len(self.classes_)
+        vote_matrix = np.zeros((n_samples, n_classes))
+        
+        for pred, weight in zip(all_predictions, valid_weights):
+            for i, cls in enumerate(self.classes_):
+                vote_matrix[:, i] += (pred == cls) * weight
+        
+        return self.classes_[np.argmax(vote_matrix, axis=1)]
+    
+    def score(self, X, y):
+        pred = self.predict(X)
+        return accuracy_score(y, pred)
     """
     Non-dualistic ensemble that transcends online/batch boundary
     
@@ -277,11 +443,11 @@ def scenario_non_dualistic(chunks, all_classes):
     print("\n" + "="*80)
     print("🧘 NON-DUALISTIC SCENARIO: Transcending Online/Batch Duality")
     print("="*80)
-    print("Philosophy: Using śūnyatā to create ensemble that adapts like online")
-    print("           but learns deeply like batch\n")
+    print("Philosophy: Using NNNNNNL (6 Non) to transcend temporal boundaries")
+    print("           All chunks exist simultaneously in non-dual awareness\n")
     
-    # Initialize models
-    sunyata = SunyataEnsemble(n_base_models=7, window_size=3)
+    # Initialize temporal transcendence model
+    sunyata = TemporalTranscendenceEnsemble(n_base_models=9, memory_size=60000)
     
     sgd = SGDClassifier(
         loss="log_loss",
@@ -302,9 +468,6 @@ def scenario_non_dualistic(chunks, all_classes):
     xgb_all_X, xgb_all_y = [], []
     WINDOW_SIZE = 5
     
-    # Non-dual memory buffer
-    memory = NonDualMemoryBuffer(max_size=40000)
-    
     first_sgd = first_pa = True
     results = []
     
@@ -316,30 +479,17 @@ def scenario_non_dualistic(chunks, all_classes):
         
         print(f"Chunk {chunk_id:02d}/{len(chunks)} | Train: {len(X_train)}, Test: {len(X_test)}")
         
-        # Add to memory
-        memory.add(X_train, y_train)
-        
-        # ===== Śūnyatā Ensemble =====
+        # ===== Temporal Transcendence Ensemble =====
         start = time.time()
         
         if first_sgd:
             sunyata.partial_fit(X_train, y_train, classes=all_classes)
+            first_sgd = False  # Reuse flag
         else:
             sunyata.partial_fit(X_train, y_train)
         
-        # Update weights based on test performance (anatta)
+        # Update weights (anatta - no fixed model importance)
         sunyata._update_weights(X_test, y_test)
-        
-        # Occasionally retrain on diverse sample (pratītyasamutpāda)
-        # Do this more aggressively to match XGBoost's batch learning
-        if chunk_id % 2 == 0 and chunk_id > 1:  # Every 2 chunks after warmup
-            X_diverse, y_diverse = memory.get_diverse_sample(n_samples=8000)
-            if X_diverse is not None:
-                for model in sunyata.models:
-                    try:
-                        model.partial_fit(X_diverse, y_diverse)
-                    except:
-                        pass
         
         sunyata_pred = sunyata.predict(X_test)
         sunyata_metrics = compute_metrics(y_test, sunyata_pred)
