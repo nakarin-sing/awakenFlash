@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark.py – 17 NON ONESTEP ŚŪNYATĀ
-Streaming + Closed-Form + Random Fourier Features
+Streaming + Closed-Form + RFF (FIXED)
 """
 
 import os
@@ -20,18 +20,17 @@ warnings.filterwarnings('ignore')
 # 17 NON ONESTEP ŚŪNYATĀ (RFF + Incremental)
 # ========================================
 class OneStepSunyata17Non:
-    def __init__(self, D=500, C=100.0, gamma=0.1):
-        self.D = D          # RFF dimension
-        self.C = C          # Regularization
+    def __init__(self, D=600, C=100.0, gamma=0.05):
+        self.D = D
+        self.C = C
         self.gamma = gamma
-        self.W = None       # Random projection matrix
-        self.alpha = None   # Dual weights
-        self.P_inv = None   # Inverse covariance (for Sherman-Morrison)
+        self.W = None
+        self.alpha = None
+        self.P_inv = None
         self.classes_ = None
         self.n_samples = 0
 
     def _rff_features(self, X):
-        """Random Fourier Features: phi(X) = [cos(WX), sin(WX)]"""
         if self.W is None:
             n_features = X.shape[1]
             self.W = np.random.normal(0, np.sqrt(self.gamma), (self.D // 2, n_features))
@@ -48,36 +47,38 @@ class OneStepSunyata17Non:
         if classes is not None:
             self.classes_ = classes
 
-        phi = self._rff_features(X)  # (n, D)
-        y_hot = self._one_hot(y)     # (n, n_classes)
+        phi = self._rff_features(X).astype(np.float32)
+        y_hot = self._one_hot(y).astype(np.float32)
 
         n = X.shape[0]
         n_classes = len(self.classes_)
 
         # First batch
         if self.alpha is None:
-            self.P_inv = np.eye(self.D) / self.C
-            self.alpha = np.zeros((self.D, n_classes))
+            self.P_inv = np.eye(self.D, dtype=np.float32) / self.C
+            self.alpha = np.zeros((self.D, n_classes), dtype=np.float32)
             self.n_samples = 0
 
-        # Incremental update using Sherman-Morrison
+        # Incremental update
         for i in range(n):
             phi_i = phi[i:i+1]  # (1, D)
             y_i = y_hot[i:i+1]  # (1, n_classes)
 
-            # P_inv @ phi_i.T
-            P_phi = self.P_inv @ phi_i.T  # (D, 1)
+            # P_inv @ phi_i.T → (D, 1)
+            P_phi = self.P_inv @ phi_i.T
 
-            # phi_i @ P_phi
-            denom = 1 + phi_i @ P_phi  # scalar
-            if denom == 0:
+            # denom = 1 + phi_i @ P_phi
+            denom = 1.0 + float(phi_i @ P_phi)
+            if denom < 1e-8:
                 continue
 
-            # Update P_inv
+            # Update P_inv: P_inv -= (P_phi @ P_phi.T) / denom
             self.P_inv -= (P_phi @ P_phi.T) / denom
 
-            # Update alpha
-            self.alpha += P_phi @ (y_i - phi_i @ self.alpha).T
+            # Update alpha: alpha += P_phi @ (y_i - phi_i @ alpha)
+            error = y_i - phi_i @ self.alpha  # (1, n_classes)
+            update = P_phi @ error             # (D, 1) @ (1, n_classes) → (D, n_classes)
+            self.alpha += update
 
         self.n_samples += n
         return self
@@ -86,7 +87,7 @@ class OneStepSunyata17Non:
         if self.alpha is None:
             return np.zeros(len(X), dtype=int)
 
-        phi = self._rff_features(X)
+        phi = self._rff_features(X).astype(np.float32)
         scores = phi @ self.alpha  # (n_test, n_classes)
         return self.classes_[np.argmax(scores, axis=1)]
 
