@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 awakenFlash_benchmark.py – 15 NON ŚŪNYATĀ STREAMING ONLINE
-True Online Learning — Beat XGBoost in Real-Time
+True Online Learning — Beat XGBoost in Real-Time (FIXED)
 """
 
 import os
@@ -22,7 +22,6 @@ warnings.filterwarnings('ignore')
 # ========================================
 class Sunyata15NonOnline:
     def __init__(self):
-        # 12 โมเดลเบา + หลากหลาย loss
         self.models = [
             SGDClassifier(loss='log_loss',       max_iter=1, warm_start=True, random_state=i, alpha=1e-5, tol=1e-4)
             for i in range(42, 48)
@@ -33,15 +32,13 @@ class Sunyata15NonOnline:
         self.weights = np.ones(12) / 12
         self.classes_ = None
         self.fitted = False
-        self.running_acc = np.zeros(12)  # เก็บ acc ล่าสุด
+        self.running_acc = np.zeros(12)
         self.count = 0
 
     def _update_weights(self, y_true, y_pred_batch):
-        """อัปเดตน้ำหนักแบบ Online (ไม่ต้อง predict ทั้งหมด)"""
         for i, m in enumerate(self.models):
             correct = (y_pred_batch[i] == y_true)
             self.running_acc[i] = 0.9 * self.running_acc[i] + 0.1 * correct.mean()
-        # Softmax weighting
         w = np.exp(self.running_acc * 12)
         self.weights = w / w.sum()
 
@@ -49,7 +46,6 @@ class Sunyata15NonOnline:
         if classes is not None:
             self.classes_ = classes
 
-        # Online: ฝึกทีละ chunk
         def train(m):
             if not self.fitted:
                 m.fit(X, y)
@@ -57,13 +53,11 @@ class Sunyata15NonOnline:
                 m.partial_fit(X, y, classes=self.classes_)
             return m.predict(X)
 
-        # Parallel train + predict
         preds = Parallel(n_jobs=-1, prefer="threads")(
             delayed(train)(m) for m in self.models
         )
         self.fitted = True
 
-        # อัปเดตน้ำหนักจาก batch นี้
         self._update_weights(y, np.array(preds).T)
         self.count += len(X)
 
@@ -71,11 +65,9 @@ class Sunyata15NonOnline:
         if not self.fitted:
             return np.zeros(len(X), dtype=int)
 
-        # Predict ทุกโมเดล
         preds = np.column_stack([m.predict(X) for m in self.models])
         vote = np.zeros((len(X), len(self.classes_)), dtype=np.float16)
 
-        # Vectorized weighted vote
         for i, cls in enumerate(self.classes_):
             vote[:, i] = np.sum((preds == cls) * self.weights, axis=1, dtype=np.float32)
 
@@ -83,14 +75,14 @@ class Sunyata15NonOnline:
 
 
 # ========================================
-# DATA – STREAMING MODE
+# DATA – FIXED: ลบ memory_map
 # ========================================
 def load_data(n_chunks=10, chunk_size=10000):
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
     print(f"Loading dataset...")
     df = pd.read_csv(
         url, header=None, nrows=n_chunks * chunk_size,
-        dtype=np.float32, engine='c', memory_map=True
+        dtype=np.float32, engine='c'  # ลบ memory_map=True
     )
     X_all = df.iloc[:, :-1].values.astype(np.float16)
     y_all = (df.iloc[:, -1].values - 1).astype(np.int8)
@@ -130,7 +122,7 @@ def scenario_15non(chunks, all_classes):
         acc = accuracy_score(y_test, pred)
         t = time.time() - start
 
-        # XGBoost (ต้องเก็บข้อมูลเก่า → ไม่ใช่ online จริง)
+        # XGBoost
         start = time.time()
         dtrain = xgb.DMatrix(X_train, label=y_train)
         dtest = xgb.DMatrix(X_test)
