@@ -33,7 +33,7 @@ class SunyataEnsemble:
     - Śūnyatā: Empty of inherent existence, adapted to context
     """
     
-    def __init__(self, n_base_models=5, window_size=3):
+    def __init__(self, n_base_models=7, window_size=3):
         self.n_base_models = n_base_models
         self.window_size = window_size
         self.models = []
@@ -42,28 +42,38 @@ class SunyataEnsemble:
         self.performance_history = []
         
         # Initialize diverse base learners (pratītyasamutpāda)
+        # More models = better ensemble
         for i in range(n_base_models):
-            if i % 3 == 0:
+            if i % 4 == 0:
                 model = SGDClassifier(
                     loss='log_loss',
                     learning_rate='optimal',
-                    max_iter=10,
+                    max_iter=15,  # More iterations
                     warm_start=True,
                     random_state=42+i,
-                    alpha=0.0001 * (1 + i * 0.1)  # Different regularization
+                    alpha=0.0001 * (1 + i * 0.05)
                 )
-            elif i % 3 == 1:
+            elif i % 4 == 1:
                 model = PassiveAggressiveClassifier(
-                    C=0.01 * (1 + i * 0.2),
-                    max_iter=10,
+                    C=0.01 * (1 + i * 0.1),
+                    max_iter=15,
                     warm_start=True,
                     random_state=42+i
                 )
+            elif i % 4 == 2:
+                model = SGDClassifier(
+                    loss='modified_huber',
+                    learning_rate='adaptive',
+                    max_iter=15,
+                    warm_start=True,
+                    random_state=42+i,
+                    eta0=0.01
+                )
             else:
                 model = SGDClassifier(
-                    loss='modified_huber',  # Robust to outliers
-                    learning_rate='adaptive',
-                    max_iter=10,
+                    loss='perceptron',
+                    learning_rate='optimal',
+                    max_iter=15,
                     warm_start=True,
                     random_state=42+i
                 )
@@ -113,37 +123,54 @@ class SunyataEnsemble:
                 pass
         
         # Occasionally replay recent chunks (break temporal attachment)
-        if len(self.chunk_history) >= 2 and np.random.random() < 0.3:
+        # But less frequently to avoid overhead
+        if len(self.chunk_history) >= 2 and np.random.random() < 0.15:
             # Replay previous chunk for better consolidation
             X_prev, y_prev = self.chunk_history[-2]
             for model in self.models:
                 try:
                     if hasattr(model, 'partial_fit'):
-                        model.partial_fit(X_prev, y_prev)
+                        model.partial_fit(X_prev[:2000], y_prev[:2000])  # Subsample
                 except:
                     pass
     
     def predict(self, X):
         """
-        Weighted voting (śūnyatā - no single truth)
+        Weighted voting with proper class prediction (śūnyatā - no single truth)
         """
-        predictions = []
+        if not self.models or self.classes_ is None:
+            return np.zeros(len(X))
+        
+        # Collect predictions from all models
+        all_predictions = []
+        valid_weights = []
+        
         for i, model in enumerate(self.models):
             try:
                 pred = model.predict(X)
-                predictions.append((pred, self.weights[i]))
+                all_predictions.append(pred)
+                valid_weights.append(self.weights[i])
             except:
                 pass
         
-        if not predictions:
+        if not all_predictions:
             return np.zeros(len(X))
         
-        # Weighted majority vote
-        final_pred = np.zeros(len(X))
-        for pred, weight in predictions:
-            final_pred += pred * weight
+        # Normalize weights
+        valid_weights = np.array(valid_weights)
+        valid_weights = valid_weights / valid_weights.sum()
         
-        return np.round(final_pred).astype(int)
+        # Weighted voting for each class
+        n_samples = len(X)
+        n_classes = len(self.classes_)
+        vote_matrix = np.zeros((n_samples, n_classes))
+        
+        for pred, weight in zip(all_predictions, valid_weights):
+            for i, cls in enumerate(self.classes_):
+                vote_matrix[:, i] += (pred == cls) * weight
+        
+        # Return class with highest weighted vote
+        return self.classes_[np.argmax(vote_matrix, axis=1)]
     
     def score(self, X, y):
         """Calculate accuracy"""
@@ -254,7 +281,7 @@ def scenario_non_dualistic(chunks, all_classes):
     print("           but learns deeply like batch\n")
     
     # Initialize models
-    sunyata = SunyataEnsemble(n_base_models=5, window_size=3)
+    sunyata = SunyataEnsemble(n_base_models=7, window_size=3)
     
     sgd = SGDClassifier(
         loss="log_loss",
@@ -304,10 +331,15 @@ def scenario_non_dualistic(chunks, all_classes):
         sunyata._update_weights(X_test, y_test)
         
         # Occasionally retrain on diverse sample (pratītyasamutpāda)
-        if chunk_id % 3 == 0:
-            X_diverse, y_diverse = memory.get_diverse_sample(n_samples=5000)
+        # Do this more aggressively to match XGBoost's batch learning
+        if chunk_id % 2 == 0 and chunk_id > 1:  # Every 2 chunks after warmup
+            X_diverse, y_diverse = memory.get_diverse_sample(n_samples=8000)
             if X_diverse is not None:
-                sunyata.partial_fit(X_diverse, y_diverse)
+                for model in sunyata.models:
+                    try:
+                        model.partial_fit(X_diverse, y_diverse)
+                    except:
+                        pass
         
         sunyata_pred = sunyata.predict(X_test)
         sunyata_metrics = compute_metrics(y_test, sunyata_pred)
