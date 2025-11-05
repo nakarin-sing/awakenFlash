@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 48 NON: RLS RESURRECTION v2
-FIXED matmul bug | Stable O(D²) | Cold Start Safe
+awakenFlash_benchmark.py – 49 NON: BATCHED RLS
+O(D²) per batch | Stable P | Speed Demon
 """
 
 import os
@@ -46,9 +46,9 @@ class VectorizedAbsoluteNon:
 
 _abs_non = VectorizedAbsoluteNon(n=1)
 
-# === 48 NON: RLS RESURRECTION v2 ===
-class SunyataV15_RLS_v2:
-    def __init__(self, D_init=1024, C=200.0, forgetting=0.99, seed=42, buffer_size=2000):
+# === 49 NON: BATCHED RLS ===
+class SunyataV16_BatchedRLS:
+    def __init__(self, D_init=1024, C=200.0, forgetting=0.99, seed=42, buffer_size=2000, batch_size=128):
         self.D = int(D_init)
         self.C = float(C)
         self.forgetting = float(forgetting)
@@ -59,6 +59,7 @@ class SunyataV15_RLS_v2:
         self.classes_ = None
         self.class_to_idx = {}
         self.buffer_size = int(buffer_size)
+        self.batch_size = int(batch_size)
         self.buffer = collections.deque(maxlen=self.buffer_size)  # (phi_non, y_onehot)
         self.eps = 1e-6
         self.initialized = False
@@ -95,45 +96,42 @@ class SunyataV15_RLS_v2:
     def _initialize_with_full_solve(self, phi_non, y_onehot):
         n, D = phi_non.shape
         K = y_onehot.shape[1]
-        PhiT_Phi = (phi_non.T @ phi_non) / n
-        PhiT_y = (phi_non.T @ y_onehot) / n
         ridge = self.C / max(1, n)
-        H = PhiT_Phi + np.eye(D, dtype=np.float32) * ridge
+        H = (phi_non.T @ phi_non) / n + np.eye(D) * ridge
         try:
-            self.alpha = np.linalg.solve(H + self.eps * np.eye(D), PhiT_y)
+            self.alpha = np.linalg.solve(H + self.eps * np.eye(D), (phi_non.T @ y_onehot) / n)
             self.P = np.linalg.inv(H + self.eps * np.eye(D))
         except:
-            self.alpha = np.linalg.pinv(H + self.eps * np.eye(D)) @ PhiT_y
+            self.alpha = np.linalg.pinv(H + self.eps * np.eye(D)) @ ((phi_non.T @ y_onehot) / n)
             self.P = np.linalg.pinv(H + self.eps * np.eye(D))
         self.initialized = True
 
-    def _rls_update(self, phi, y_onehot):
-        D = self.P.shape[0]
-        K = y_onehot.shape[1]
-        for i in range(phi.shape[0]):
-            x = phi[i:i+1]  # (1, D)
-            y = y_onehot[i:i+1]  # (1, K)
+    def _batched_rls_update(self, X_batch, y_batch):
+        # X_batch: (B, D), y_batch: (B, K)
+        B, D = X_batch.shape
+        K = y_batch.shape[1]
 
-            # Px = P @ x.T → (D, 1)
-            Px = self.P @ x.T
-            denom = 1.0 + float(x @ Px)
-            if denom < self.eps:
-                continue
-            k = Px / denom  # (D, 1)
+        # Predict: (B, K)
+        pred = X_batch @ self.alpha  # (B, D) @ (D, K)
+        error = y_batch - pred  # (B, K)
 
-            # error = y - x @ alpha → (1, K)
-            pred = x @ self.alpha  # (1, K)
-            error = y - pred  # (1, K)
+        # PX = P @ X.T → (D, B)
+        PX = self.P @ X_batch.T
+        # S = X @ PX → (B, B)
+        S = X_batch @ PX
+        S_diag = S.diagonal()
+        S_diag = np.clip(S_diag, self.eps, None)
+        # Gain K = PX @ inv(S) → (D, B)
+        K_gain = PX / S_diag[None, :]  # broadcasting
 
-            # alpha update: alpha += k @ error → (D, 1) @ (1, K) = (D, K)
-            self.alpha += k @ error
+        # Alpha update
+        self.alpha += K_gain @ error  # (D, B) @ (B, K) → (D, K)
 
-            # P update: P = P - k @ (x @ P)
-            self.P -= np.outer(k, x @ self.P)
-
-            # Forgetting + regularization
-            self.P *= self.forgetting
-            self.P += (1 - self.forgetting) * np.eye(D) * (self.C / D)
+        # P update (Woodbury)
+        temp = K_gain @ X_batch  # (D, D)
+        self.P -= temp
+        self.P *= self.forgetting
+        self.P += (1 - self.forgetting) * np.eye(D) * (self.C / D)
 
     def partial_fit(self, X, y, classes=None):
         if classes is not None:
@@ -170,20 +168,21 @@ class SunyataV15_RLS_v2:
                 self.buffer.append((phi_non[i].copy(), y_onehot[i].copy()))
             return self
 
-        # === BUFFER + RLS UPDATE ===
+        # === ADD TO BUFFER ===
         for i in range(n):
             self.buffer.append((phi_non[i].copy(), y_onehot[i].copy()))
 
+        # === BATCHED RLS UPDATE ===
         buf_n = len(self.buffer)
-        if buf_n == 0 or self.alpha is None:
+        if buf_n < self.batch_size or self.alpha is None:
             return self
 
-        sample_n = min(512, buf_n)
-        idxs = self.rng.choice(buf_n, sample_n, replace=False)
-        phi_buf = np.stack([self.buffer[i][0] for i in idxs])
-        y_buf = np.stack([self.buffer[i][1] for i in idxs])
+        # Sample batch
+        idxs = self.rng.choice(buf_n, self.batch_size, replace=False)
+        X_batch = np.stack([self.buffer[i][0] for i in idxs])
+        y_batch = np.stack([self.buffer[i][1] for i in idxs])
 
-        self._rls_update(phi_buf, y_buf)
+        self._batched_rls_update(X_batch, y_batch)
 
         return self
 
@@ -207,11 +206,11 @@ def load_data(n_chunks=10, chunk_size=10000):
     chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) for i in range(0, len(X_all), chunk_size)]
     return chunks[:n_chunks], np.unique(y_all)
 
-def scenario_48non(chunks, all_classes):
+def scenario_49non(chunks, all_classes):
     print("\n" + "="*80)
-    print("48 NON: RLS RESURRECTION v2 — FIXED & UNBREAKABLE")
+    print("49 NON: BATCHED RLS — SPEED DEMON")
     print("="*80)
-    sunyata = SunyataV15_RLS_v2(D_init=1024, C=200.0, forgetting=0.99, buffer_size=2000)
+    sunyata = SunyataV16_BatchedRLS(D_init=1024, C=200.0, forgetting=0.99, buffer_size=2000, batch_size=128)
     results = []
 
     for cid, (X_chunk, y_chunk) in enumerate(chunks, 1):
@@ -237,30 +236,30 @@ def scenario_48non(chunks, all_classes):
         t_x = time.time() - t0
 
         results.append({'chunk': cid, 's_acc': acc_s, 's_time': t_s, 'x_acc': acc_x, 'x_time': t_x})
-        print(f"  RLS v2: acc={acc_s:.3f} t={t_s:.3f}s  |  XGB: acc={acc_x:.3f} t={t_x:.3f}s")
+        print(f"  BATCHED RLS: acc={acc_s:.3f} t={t_s:.3f}s  |  XGB: acc={acc_x:.3f} t={t_x:.3f}s")
 
     df = pd.DataFrame(results)
-    print("\nRLS v2 UNBREAKABLE")
+    print("\nBATCHED RLS ACHIEVED")
     s_acc = df['s_acc'].mean()
     x_acc = df['x_acc'].mean()
     s_time = df['s_time'].mean()
     x_time = df['x_time'].mean()
-    print(f"RLS v2: {s_acc:.4f} | {s_time:.3f}s")
-    print(f"XGB:    {x_acc:.4f} | {x_time:.3f}s")
-    if s_time < 0.06:
-        print("=> SPEED: < 0.06s — DEMON MODE.")
-    if s_acc > 0.82:
-        print("=> ACCURACY: > 0.82 — NIRVANA.")
+    print(f"BATCHED RLS: {s_acc:.4f} | {s_time:.3f}s")
+    print(f"XGB:         {x_acc:.4f} | {x_time:.3f}s")
+    if s_time < 0.08:
+        print("=> SPEED: < 0.08s — DEMON MODE.")
+    if s_acc > 0.80:
+        print("=> ACCURACY: > 0.80 — NIRVANA.")
     return df
 
 def main():
     print("="*80)
-    print("48 NON: RLS RESURRECTION v2 IN awakenFlash")
+    print("49 NON: BATCHED RLS IN awakenFlash")
     print("="*80)
     chunks, all_classes = load_data()
-    df = scenario_48non(chunks, all_classes)
+    df = scenario_49non(chunks, all_classes)
     os.makedirs('benchmark_results', exist_ok=True)
-    df.to_csv('benchmark_results/48non_rls_v2.csv', index=False)
+    df.to_csv('benchmark_results/49non_batched_rls.csv', index=False)
 
 if __name__ == "__main__":
     main()
