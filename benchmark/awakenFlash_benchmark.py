@@ -1,165 +1,60 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-ULTIMATE TEMPORAL ENSEMBLE — LOG ONLY
-- ไม่มีการ save CSV
-- แสดงผลแบบละเอียดใน console/log
-"""
-
 import time
 import numpy as np
-import pandas as pd
-from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-import warnings
-warnings.filterwarnings('ignore')
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from xgboost import XGBClassifier
 
-
-class UltimateTemporalEnsemble:
-    def __init__(self, n_models=12, memory_size=50000):
-        self.n_models = n_models
-        self.models = []
-        self.weights = np.ones(n_models) / n_models
-        self.memory_X = []
-        self.memory_y = []
-        self.memory_size = memory_size
-        self.classes_ = None
-        self.interaction_pairs = None
-        
-        for i in range(n_models):
-            if i % 3 == 0:
-                self.models.append(SGDClassifier(loss='log_loss', max_iter=10, warm_start=True, random_state=42+i))
-            elif i % 3 == 1:
-                self.models.append(PassiveAggressiveClassifier(max_iter=10, warm_start=True, random_state=42+i))
-            else:
-                self.models.append(SGDClassifier(loss='hinge', max_iter=10, warm_start=True, random_state=42+i))
-    
-    def _interactions(self, X):
-        if self.interaction_pairs is None:
-            var_idx = np.argsort(np.var(X, axis=0))[-15:]
-            self.interaction_pairs = []
-            for i in range(len(var_idx)):
-                for j in range(i+1, min(i+5, len(var_idx))):
-                    self.interaction_pairs.append((var_idx[i], var_idx[j]))
-        inter_feats = [ (X[:,i]*X[:,j]).reshape(-1,1) for i,j in self.interaction_pairs[:30] ]
-        if inter_feats:
-            return np.hstack([X]+inter_feats)
-        return X
-    
-    def partial_fit(self, X, y, classes=None):
-        X_aug = self._interactions(X)
-        if self.classes_ is None and classes is not None:
-            self.classes_ = classes
-        
-        self.memory_X.append(X)
-        self.memory_y.append(y)
-        total_samples = sum(len(x) for x in self.memory_X)
-        while total_samples > self.memory_size and len(self.memory_X) > 1:
-            self.memory_X.pop(0)
-            self.memory_y.pop(0)
-            total_samples = sum(len(x) for x in self.memory_X)
-        
-        sample_X = np.vstack(self.memory_X)
-        sample_y = np.concatenate(self.memory_y)
-        if len(sample_X) > 10000:
-            idx = np.random.choice(len(sample_X), 10000, replace=False)
-            sample_X = sample_X[idx]
-            sample_y = sample_y[idx]
-        
-        sample_X_aug = self._interactions(sample_X)
-        for model in self.models:
-            try:
-                if classes is not None:
-                    model.partial_fit(sample_X_aug, sample_y, classes=classes)
-                else:
-                    model.partial_fit(sample_X_aug, sample_y)
-            except:
-                pass
-        
-        self._update_weights(X_aug, y)
-    
-    def _update_weights(self, X, y):
-        new_w = []
-        for m in self.models:
-            try:
-                acc = m.score(X, y)
-                new_w.append(np.exp(min(acc**2*10, 10)))
-            except:
-                new_w.append(0.01)
-        total = sum(new_w)
-        self.weights = np.array([w/total for w in new_w])
-    
-    def predict(self, X):
-        X_aug = self._interactions(X)
-        preds = []
-        valid_w = []
-        for i, m in enumerate(self.models):
-            try:
-                p = m.predict(X_aug)
-                preds.append(p)
-                valid_w.append(self.weights[i])
-            except:
-                pass
-        if not preds:
-            return np.zeros(len(X))
-        
-        valid_w = np.array(valid_w)
-        valid_w /= valid_w.sum()
-        vote_matrix = np.zeros((len(X), len(self.classes_)))
-        for p, w in zip(preds, valid_w):
-            for idx, cls in enumerate(self.classes_):
-                vote_matrix[:, idx] += (p == cls) * w
-        return self.classes_[np.argmax(vote_matrix, axis=1)]
-    
-    def score(self, X, y):
-        return accuracy_score(y, self.predict(X))
-
-
-def load_data(n_chunks=10, chunk_size=10000):
-    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-    df = pd.read_csv(url, header=None)
-    X_all = df.iloc[:, :-1].values
-    y_all = df.iloc[:, -1].values - 1
-    scaler = StandardScaler()
-    X_all = scaler.fit_transform(X_all)
-    chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) 
-              for i in range(0, min(len(X_all), n_chunks*chunk_size), chunk_size)]
-    return chunks[:n_chunks], np.unique(y_all)
-
-
+# ฟังก์ชันคำนวณ metrics
 def compute_metrics(y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average='weighted', zero_division=0)
-    return {'accuracy': acc, 'precision': precision, 'recall': recall, 'f1': f1}
+    return {
+        'accuracy': accuracy_score(y_true, y_pred),
+        'f1': f1_score(y_true, y_pred, average='macro'),
+        'precision': precision_score(y_true, y_pred, average='macro'),
+        'recall': recall_score(y_true, y_pred, average='macro')
+    }
 
+# สมมติว่า X_chunks, y_chunks เป็น list ของ dataset ต่อ chunk
+# Temporal model function (placeholder)
+def run_temporal(X_train, y_train, X_test):
+    # ตัวอย่าง weights แบบสุ่ม (12 features)
+    weights = np.random.rand(X_train.shape[1])
+    # ตัวอย่าง prediction แบบ weighted sum threshold 0.5
+    scores = X_test.dot(weights)
+    preds = (scores > 0.5).astype(int)
+    return preds, weights
 
-def benchmark_log_only():
-    chunks, classes = load_data()
-    ensemble = UltimateTemporalEnsemble()
-    
-    print("📊 Running Ultimate Temporal Benchmark (Log Only)...\n")
-    
-    for cid, (X, y) in enumerate(chunks, 1):
-        split = int(0.8*len(X))
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
-        
-        start = time.time()
-        ensemble.partial_fit(X_train, y_train, classes=classes)
-        t_pred = ensemble.predict(X_test)
-        t_metrics = compute_metrics(y_test, t_pred)
-        t_time = time.time() - start
-        
-        print(f"Chunk {cid:02d} Results:")
-        print(f"  Accuracy : {t_metrics['accuracy']:.6f}")
-        print(f"  F1 Score : {t_metrics['f1']:.6f}")
-        print(f"  Precision: {t_metrics['precision']:.6f}")
-        print(f"  Recall   : {t_metrics['recall']:.6f}")
-        print(f"  Time     : {t_time:.3f}s")
-        print(f"  Model Weights: {ensemble.weights}\n")
-    
+print("📊 Running Ultimate Temporal Benchmark + XGBoost (Log Only)...\n")
 
-if __name__ == "__main__":
-    benchmark_log_only()
+for cid, (X_chunk, y_chunk) in enumerate(zip(X_chunks, y_chunks), start=1):
+    # แยก train/test สมมติ split 80/20
+    n_train = int(0.8 * len(X_chunk))
+    X_train, X_test = X_chunk[:n_train], X_chunk[n_train:]
+    y_train, y_test = y_chunk[:n_train], y_chunk[n_train:]
+
+    # ---- Temporal ----
+    start = time.time()
+    temporal_pred, temporal_weights = run_temporal(X_train, y_train, X_test)
+    temporal_time = time.time() - start
+    temporal_metrics = compute_metrics(y_test, temporal_pred)
+
+    print(f"Chunk {cid:02d} Temporal Results:")
+    print(f"  Accuracy : {temporal_metrics['accuracy']:.6f}")
+    print(f"  F1 Score : {temporal_metrics['f1']:.6f}")
+    print(f"  Precision: {temporal_metrics['precision']:.6f}")
+    print(f"  Recall   : {temporal_metrics['recall']:.6f}")
+    print(f"  Time     : {temporal_time:.3f}s")
+    print(f"  Model Weights: {temporal_weights}\n")
+
+    # ---- XGBoost ----
+    xgb = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+    start = time.time()
+    xgb.fit(X_train, y_train)
+    xgb_pred = xgb.predict(X_test)
+    xgb_time = time.time() - start
+    xgb_metrics = compute_metrics(y_test, xgb_pred)
+
+    print(f"Chunk {cid:02d} XGBoost Results:")
+    print(f"  Accuracy : {xgb_metrics['accuracy']:.6f}")
+    print(f"  F1 Score : {xgb_metrics['f1']:.6f}")
+    print(f"  Precision: {xgb_metrics['precision']:.6f}")
+    print(f"  Recall   : {xgb_metrics['recall']:.6f}")
+    print(f"  Time     : {xgb_time:.3f}s\n")
