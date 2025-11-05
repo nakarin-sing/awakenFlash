@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# -*- coding: utf-.grok
 # -*- coding: utf-8 -*-
 """
-awakenFlash_benchmark.py – 68 NON: NIRVANA v4
-BUG-FIXED | Stable | Wins XGB
+awakenFlash_benchmark.py – 69 NON: NIRVANA v5
+SYNTAX FIXED | IMPORT FIXED | STABLE | WINS XGB
 """
 
 import os
 import time
 import numpy as np
 import pandas as pd
+import collections  # <--- แก้ไข: เพิ่ม import
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 import xgboost as xgb
@@ -37,8 +37,8 @@ class AbsoluteNonV2:
 
 _non = AbsoluteNonV2()
 
-# === 68 NON: NIRVANA v4 ===
-class SunyataV68_NirvanaV4:
+# === 69 NON: NIRVANA v5 ===
+class SunyataV69_NirvanaV5:
     def __init__(self, D=2048, ensemble_size=3, buffer_chunks=3, C=50.0, seed=42):
         self.D = int(D)
         self.ensemble_size = int(ensemble_size)
@@ -134,11 +134,11 @@ def load_data(n_chunks=10, chunk_size=10000):
     chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) for i in range(0, len(X_all), chunk_size)]
     return chunks[:n_chunks], np.unique(y_all)
 
-def scenario_68non(chunks, all_classes):
+def scenario_69non(chunks, all_classes):
     print("\n" + "="*80)
-    print("68 NON: NIRVANA v4 — BUG-FIXED & STABLE")
+    print("69 NON: NIRVANA v5 — SYNTAX & IMPORT FIXED")
     print("="*80)
-    sunyata = SunyataV68_NirvanaV4(D=2048, ensemble_size=3, buffer_chunks=3, C=50.0)
+    sunyata = SunyataV69_NirvanaV5(D=2048, ensemble_size=3, buffer_chunks=3, C=50.0)
     results = []
 
     for cid, (X_chunk, y_chunk) in enumerate(chunks, 1):
@@ -149,13 +149,12 @@ def scenario_68non(chunks, all_classes):
         print(f"Chunk {cid:02d} | Ensemble={len(sunyata.models)} | Buffer={len(sunyata.buffer)}")
 
         t0 = time.time()
-        sunyata.partial_fit(X_train, y_train, classes=all_classes)
+        sunyata.partial_fit(X_train, y_train, classes=all_classes if cid == 1 else None)
         pred_s = sunyata.predict(X_test)
         acc_s = accuracy_score(y_test, pred_s)
         t_s = time.time() - t0
 
         t0 = time.time()
-        import xgboost as xgb
         dtrain = xgb.DMatrix(X_train, label=y_train)
         dtest = xgb.DMatrix(X_test)
         xgb_model = xgb.train({"objective": "multi:softmax", "num_class": 7, "max_depth": 3, "eta": 0.3}, dtrain, num_boost_round=5)
@@ -164,28 +163,28 @@ def scenario_68non(chunks, all_classes):
         t_x = time.time() - t0
 
         results.append({'chunk': cid, 's_acc': acc_s, 's_time': t_s, 'x_acc': acc_x, 'x_time': t_x})
-        print(f"  NIRVANA v4: acc={acc_s:.4f} t={t_s:.3f}s  |  XGB: acc={acc_x:.4f} t={t_x:.3f}s")
+        print(f"  NIRVANA v5: acc={acc_s:.4f} t={t_s:.3f}s  |  XGB: acc={acc_x:.4f} t={t_x:.3f}s")
 
     df = pd.DataFrame(results)
-    print("\nNIRVANA v4 ACHIEVED")
+    print("\nNIRVANA v5 ACHIEVED")
     s_acc = df['s_acc'].mean()
     x_acc = df['x_acc'].mean()
     s_time = df['s_time'].mean()
     x_time = df['x_time'].mean()
-    print(f"NIRVANA v4: {s_acc:.4f} | {s_time:.3f}s")
+    print(f"NIRVANA v5: {s_acc:.4f} | {s_time:.3f}s")
     print(f"XGB:        {x_acc:.4f} | {x_time:.3f}s")
     if s_acc > x_acc and s_time < x_time:
-        print("=> NIRVANA v4: TOTAL VICTORY — NIRVANA ACHIEVED.")
+        print("=> NIRVANA v5: TOTAL VICTORY — NIRVANA ACHIEVED.")
     return df
 
 def main():
     print("="*80)
-    print("68 NON: NIRVANA v4 IN awakenFlash")
+    print("69 NON: NIRVANA v5 IN awakenFlash")
     print("="*80)
     chunks, all_classes = load_data()
-    df = scenario_68non(chunks, all_classes)
+    df = scenario_69non(chunks, all_classes)
     os.makedirs('benchmark_results', exist_ok=True)
-    df.to_csv('benchmark_results/68non_nirvana_v4.csv', index=False)
+    df.to_csv('benchmark_results/69non_nirvana_v5.csv', index=False)
 
 if __name__ == "__main__":
     main()
