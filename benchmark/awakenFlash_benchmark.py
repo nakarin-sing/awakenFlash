@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NON-LOGIC ULTIMATE TEMPORAL ENSEMBLE
-- Speed > XGBoost
-- Accuracy > XGBoost
-- Adaptive feature interactions & weighting
+ULTIMATE TEMPORAL ENSEMBLE — LOG ONLY
+- ไม่มีการ save CSV
+- แสดงผลแบบละเอียดใน console/log
 """
 
-import os
 import time
 import numpy as np
 import pandas as pd
@@ -19,13 +17,6 @@ warnings.filterwarnings('ignore')
 
 
 class UltimateTemporalEnsemble:
-    """
-    Aggressive online+batch ensemble
-    - Weighted voting
-    - Chunk-aware feature interactions
-    - Adaptive weighting
-    """
-    
     def __init__(self, n_models=12, memory_size=50000):
         self.n_models = n_models
         self.models = []
@@ -46,14 +37,11 @@ class UltimateTemporalEnsemble:
     
     def _interactions(self, X):
         if self.interaction_pairs is None:
-            # Top variance features per chunk
             var_idx = np.argsort(np.var(X, axis=0))[-15:]
             self.interaction_pairs = []
             for i in range(len(var_idx)):
                 for j in range(i+1, min(i+5, len(var_idx))):
                     self.interaction_pairs.append((var_idx[i], var_idx[j]))
-        
-        # Multiply features
         inter_feats = [ (X[:,i]*X[:,j]).reshape(-1,1) for i,j in self.interaction_pairs[:30] ]
         if inter_feats:
             return np.hstack([X]+inter_feats)
@@ -64,7 +52,6 @@ class UltimateTemporalEnsemble:
         if self.classes_ is None and classes is not None:
             self.classes_ = classes
         
-        # Store in memory
         self.memory_X.append(X)
         self.memory_y.append(y)
         total_samples = sum(len(x) for x in self.memory_X)
@@ -73,7 +60,6 @@ class UltimateTemporalEnsemble:
             self.memory_y.pop(0)
             total_samples = sum(len(x) for x in self.memory_X)
         
-        # Train all models on current chunk + memory sample
         sample_X = np.vstack(self.memory_X)
         sample_y = np.concatenate(self.memory_y)
         if len(sample_X) > 10000:
@@ -82,7 +68,6 @@ class UltimateTemporalEnsemble:
             sample_y = sample_y[idx]
         
         sample_X_aug = self._interactions(sample_X)
-        
         for model in self.models:
             try:
                 if classes is not None:
@@ -92,11 +77,9 @@ class UltimateTemporalEnsemble:
             except:
                 pass
         
-        # Adaptive weighting per chunk
         self._update_weights(X_aug, y)
     
     def _update_weights(self, X, y):
-        # Super-exponential weighting
         new_w = []
         for m in self.models:
             try:
@@ -123,19 +106,16 @@ class UltimateTemporalEnsemble:
         
         valid_w = np.array(valid_w)
         valid_w /= valid_w.sum()
-        
         vote_matrix = np.zeros((len(X), len(self.classes_)))
         for p, w in zip(preds, valid_w):
             for idx, cls in enumerate(self.classes_):
                 vote_matrix[:, idx] += (p == cls) * w
-        
         return self.classes_[np.argmax(vote_matrix, axis=1)]
     
     def score(self, X, y):
         return accuracy_score(y, self.predict(X))
 
 
-# Benchmark
 def load_data(n_chunks=10, chunk_size=10000):
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
     df = pd.read_csv(url, header=None)
@@ -155,13 +135,12 @@ def compute_metrics(y_true, y_pred):
     return {'accuracy': acc, 'precision': precision, 'recall': recall, 'f1': f1}
 
 
-def benchmark_log():
+def benchmark_log_only():
     chunks, classes = load_data()
     ensemble = UltimateTemporalEnsemble()
     
-    print("📊 Running Ultimate Temporal Benchmark...")
+    print("📊 Running Ultimate Temporal Benchmark (Log Only)...\n")
     
-    results = []
     for cid, (X, y) in enumerate(chunks, 1):
         split = int(0.8*len(X))
         X_train, X_test = X[:split], X[split:]
@@ -173,21 +152,14 @@ def benchmark_log():
         t_metrics = compute_metrics(y_test, t_pred)
         t_time = time.time() - start
         
-        print(f"Chunk {cid:02d}: Temporal={t_metrics['accuracy']:.3f} | "
-              f"Time={t_time:.3f}s")
-        
-        results.append({
-            'chunk': cid,
-            'temporal_acc': t_metrics['accuracy'],
-            'temporal_f1': t_metrics['f1'],
-            'temporal_time': t_time
-        })
+        print(f"Chunk {cid:02d} Results:")
+        print(f"  Accuracy : {t_metrics['accuracy']:.6f}")
+        print(f"  F1 Score : {t_metrics['f1']:.6f}")
+        print(f"  Precision: {t_metrics['precision']:.6f}")
+        print(f"  Recall   : {t_metrics['recall']:.6f}")
+        print(f"  Time     : {t_time:.3f}s")
+        print(f"  Model Weights: {ensemble.weights}\n")
     
-    df = pd.DataFrame(results)
-    os.makedirs("benchmark_results", exist_ok=True)
-    df.to_csv("benchmark_results/ultimate_temporal_results.csv", index=False)
-    print("✅ Results saved to benchmark_results/ultimate_temporal_results.csv")
-
 
 if __name__ == "__main__":
-    benchmark_log()
+    benchmark_log_only()
