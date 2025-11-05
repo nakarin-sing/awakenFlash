@@ -19,11 +19,15 @@ warnings.filterwarnings('ignore')
 
 class TemporalTranscendenceEnsemble:
     """
-    NNNNNNL (6 Non): Transcend temporal attachment
-    Philosophy: All chunks exist simultaneously in non-dual awareness
+    NNNNNNNNL (8 Non): Transcend epistemic attachment
+    
+    Philosophy: 
+    - Transcend linear/non-linear duality
+    - Use feature interactions (pratītyasamutpāda)
+    - Polynomial features without attachment to complexity
     """
     
-    def __init__(self, n_base_models=9, memory_size=60000):
+    def __init__(self, n_base_models=11, memory_size=60000):
         self.n_base_models = n_base_models
         self.models = []
         self.weights = np.ones(n_base_models) / n_base_models
@@ -31,116 +35,173 @@ class TemporalTranscendenceEnsemble:
         self.all_data_y = []
         self.memory_size = memory_size
         
-        # Initialize diverse ensemble (pratītyasamutpāda)
+        # Initialize VERY diverse ensemble
         for i in range(n_base_models):
-            if i % 5 == 0:
+            if i % 6 == 0:
+                # Log loss with strong regularization
                 model = SGDClassifier(
                     loss='log_loss',
                     learning_rate='optimal',
-                    max_iter=20,
+                    max_iter=25,
                     warm_start=True,
                     random_state=42+i,
-                    alpha=0.00005 * (1 + i * 0.03)
+                    alpha=0.00003 * (1 + i * 0.02)
                 )
-            elif i % 5 == 1:
+            elif i % 6 == 1:
+                # Passive-Aggressive aggressive
                 model = PassiveAggressiveClassifier(
-                    C=0.015 * (1 + i * 0.08),
-                    max_iter=20,
+                    C=0.02 * (1 + i * 0.1),
+                    max_iter=25,
                     warm_start=True,
                     random_state=42+i
                 )
-            elif i % 5 == 2:
+            elif i % 6 == 2:
+                # Modified Huber (robust)
                 model = SGDClassifier(
                     loss='modified_huber',
                     learning_rate='adaptive',
-                    max_iter=20,
+                    max_iter=25,
                     warm_start=True,
                     random_state=42+i,
-                    eta0=0.015
+                    eta0=0.02
                 )
-            elif i % 5 == 3:
+            elif i % 6 == 3:
+                # Perceptron with L1
                 model = SGDClassifier(
                     loss='perceptron',
                     learning_rate='optimal',
-                    max_iter=20,
+                    max_iter=25,
                     warm_start=True,
                     random_state=42+i,
                     penalty='l1',
-                    alpha=0.0001
+                    alpha=0.00008
                 )
-            else:
+            elif i % 6 == 4:
+                # Squared hinge PA
                 model = PassiveAggressiveClassifier(
-                    C=0.02,
-                    max_iter=20,
+                    C=0.025,
+                    max_iter=25,
                     warm_start=True,
                     random_state=42+i,
                     loss='squared_hinge'
+                )
+            else:
+                # Hinge loss SGD (SVM-like)
+                model = SGDClassifier(
+                    loss='hinge',
+                    learning_rate='optimal',
+                    max_iter=25,
+                    warm_start=True,
+                    random_state=42+i,
+                    alpha=0.00005,
+                    penalty='l2'
                 )
             self.models.append(model)
         
         self.first_fit = True
         self.classes_ = None
+        
+        # Feature interaction indices (pratītyasamutpāda)
+        # Pre-compute important feature pairs
+        self.interaction_pairs = None
+    
+    def _create_interactions(self, X):
+        """
+        Create polynomial features (transcend linear limitation)
+        Only most important interactions to avoid explosion
+        """
+        if self.interaction_pairs is None:
+            # Sample-based feature selection
+            n_features = X.shape[1]
+            # Select top variance features
+            variances = np.var(X, axis=0)
+            top_indices = np.argsort(variances)[-10:]  # Top 10
+            
+            # Create pairs from top features
+            self.interaction_pairs = []
+            for i in range(len(top_indices)):
+                for j in range(i+1, min(i+4, len(top_indices))):  # Limit pairs
+                    self.interaction_pairs.append((top_indices[i], top_indices[j]))
+        
+        # Create interaction features
+        X_interactions = []
+        for i, j in self.interaction_pairs[:20]:  # Limit to 20 interactions
+            X_interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
+        
+        if X_interactions:
+            return np.hstack([X] + X_interactions)
+        return X
     
     def _update_weights(self, X_test, y_test):
-        """Dynamic weight adjustment (anatta - no fixed identity)"""
+        """Super-exponential weighting (anatta)"""
+        X_test_aug = self._create_interactions(X_test)
         new_weights = []
         for model in self.models:
             try:
-                acc = model.score(X_test, y_test)
-                new_weights.append(np.exp(acc * 5))  # Exponential
+                acc = model.score(X_test_aug, y_test)
+                # Super-exponential: e^(acc^2 * 10)
+                new_weights.append(np.exp(min(acc**2 * 10, 10)))
             except:
-                new_weights.append(0.01)
+                new_weights.append(0.001)
         
         total = sum(new_weights)
         self.weights = np.array([w/total for w in new_weights])
     
     def partial_fit(self, X, y, classes=None):
-        """
-        Temporal transcendence learning
-        """
+        """Temporal + Epistemic transcendence"""
+        # Add interactions
+        X_aug = self._create_interactions(X)
+        
         if self.first_fit and classes is not None:
             self.classes_ = classes
             self.first_fit = False
         
-        # Store ALL data (transcend temporal boundaries)
+        # Store data
         self.all_data_X.append(X)
         self.all_data_y.append(y)
         
-        # Maintain memory limit (anicca - impermanence)
+        # Memory limit
         total_samples = sum(len(x) for x in self.all_data_X)
         while total_samples > self.memory_size and len(self.all_data_X) > 1:
             self.all_data_X.pop(0)
             self.all_data_y.pop(0)
             total_samples = sum(len(x) for x in self.all_data_X)
         
-        # 1. Online: Current chunk
+        # 1. Online learning
         for model in self.models:
             try:
                 if classes is not None:
-                    model.partial_fit(X, y, classes=classes)
+                    model.partial_fit(X_aug, y, classes=classes)
                 else:
-                    model.partial_fit(X, y)
+                    model.partial_fit(X_aug, y)
             except:
                 pass
         
-        # 2. Batch-like: Sample from ALL history
-        if len(self.all_data_X) >= 2:
+        # 2. Aggressive batch learning from ALL history
+        if len(self.all_data_X) >= 1:
             all_X = np.vstack(self.all_data_X)
             all_y = np.concatenate(self.all_data_y)
             
-            n_samples = min(len(all_X), 10000)
+            # Sample MORE data (12K instead of 10K)
+            n_samples = min(len(all_X), 12000)
             indices = np.random.choice(len(all_X), n_samples, replace=False)
             X_sample = all_X[indices]
             y_sample = all_y[indices]
             
+            # Add interactions
+            X_sample_aug = self._create_interactions(X_sample)
+            
+            # Train ALL models
             for model in self.models:
                 try:
-                    model.partial_fit(X_sample, y_sample)
+                    model.partial_fit(X_sample_aug, y_sample)
                 except:
                     pass
     
     def predict(self, X):
-        """Weighted voting (śūnyatā - no single truth)"""
+        """Predict with interactions"""
+        X_aug = self._create_interactions(X)
+        
         if not self.models or self.classes_ is None:
             return np.zeros(len(X))
         
@@ -149,7 +210,7 @@ class TemporalTranscendenceEnsemble:
         
         for i, model in enumerate(self.models):
             try:
-                pred = model.predict(X)
+                pred = model.predict(X_aug)
                 all_predictions.append(pred)
                 valid_weights.append(self.weights[i])
             except:
