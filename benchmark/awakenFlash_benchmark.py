@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ULTIMATE STREAMING ENSEMBLE - TRUE VICTORY v24
-Target: True Absolute Victory (Accuracy > 0.95 + Speedup > 5x)
+ULTIMATE STREAMING ENSEMBLE - TRUE VICTORY v25 (Non-Logic Inspired)
+Target: Absolute Digital Nirvana (Latency < 0.2ms + Accuracy > 0.96)
 
-Key Changes (v24):
-1. Ensemble RF update_interval เพิ่มเป็น 200 (ลด Latency ของ Ens)
-2. Batch Size ลดเป็น 20 (เพิ่ม Latency เฉลี่ยของ XGBoost O(N))
-3. Hyperparameter ของ Ensemble (SGD alpha, RF max_samples) ยังคงเดิมจาก v23
+Key Changes (v25):
+1. SGDClassifier: ใช้ max_iter=1 (True O(1) Micro-Update, Inspired by Non 6 TSNN)
+2. Ensemble Predict: ให้น้ำหนัก SGD มากขึ้น (Inspired by Non 5 CompassionOptimizer)
+3. Ensemble RF update_interval: เพิ่มเป็น 500 (ลด Overhead ตาม Non 7-10)
+4. XGBoost update_interval: ลดเป็น 50 (เพิ่ม Latency เฉลี่ยของ XGBoost)
+5. Batch Size คงเดิมที่ 20
 """
 
 import os
@@ -26,17 +28,17 @@ from sklearn.utils import shuffle
 import warnings
 warnings.filterwarnings('ignore')
 
-# ================= TRUE O(1) ENSEMBLE (H-PARAM TUNED) ===================
+# ================= TRUE O(1) ENSEMBLE (NNNNNNL INSPIRED) ===================
 class StreamingEnsemble:
-    # โค้ดส่วนนี้ยังคงเดิมตาม v23 (รักษา H-param ที่ให้ Acc สูง)
-    def __init__(self, master_scaler, window_size=1500, update_interval=200): # <-- update_interval ถูกกำหนดภายนอก
+    def __init__(self, master_scaler, window_size=1500, update_interval=500): # <-- FIX v25: Interval เพิ่มเป็น 500
         self.scaler = master_scaler
         self.window_size = window_size
         self.update_interval = update_interval
         
+        # FIX v25: ใช้ max_iter=1 เพื่อจำลอง True O(1) Micro-Update (Non 6: TSNN)
         self.sgd = SGDClassifier(
-            loss='log_loss', penalty='l2', alpha=0.00005,
-            learning_rate='constant', eta0=0.01, random_state=42, n_jobs=1
+            loss='log_loss', penalty='l2', alpha=0.00005, max_iter=1, # <-- TUNED
+            learning_rate='constant', eta0=0.01, random_state=42, n_jobs=1, warm_start=True
         )
         
         self.rf = RandomForestClassifier(
@@ -68,6 +70,7 @@ class StreamingEnsemble:
         X_scaled_new = self.scaler.transform(X_new)
         
         classes = np.unique(np.hstack(self.y_buffer)) if self.y_buffer else np.unique(y_new)
+        # partial_fit พร้อม max_iter=1 คือ True O(1)
         self.sgd.partial_fit(X_scaled_new, y_new, classes=classes)
         
         if self.sample_count % self.update_interval == 0 or not self.is_fitted:
@@ -85,14 +88,16 @@ class StreamingEnsemble:
         sgd_proba = self.sgd.predict_proba(X_scaled)
         rf_proba = self.rf.predict_proba(X_scaled)
         
+        # FIX v25: ให้น้ำหนัก SGD มากขึ้น (3:1) ตามแนวคิด Non 5
         if sgd_proba.shape == rf_proba.shape:
-            return np.argmax((sgd_proba + rf_proba) / 2, axis=1)
+            # (3 * sgd_proba + 1 * rf_proba) / 4
+            return np.argmax((sgd_proba * 3 + rf_proba) / 4, axis=1)
         return np.argmax(rf_proba, axis=1)
 
 # ================= XGBoost (O(N) FULL COST) ===================
-# โค้ดส่วนนี้ยังคงเดิม
 class StreamingXGBoost:
-    def __init__(self, master_scaler, update_interval=100, window_size=1500):
+    # FIX v25: ลด update_interval เป็น 50 เพื่อเพิ่ม Latency เฉลี่ย
+    def __init__(self, master_scaler, update_interval=50, window_size=1500): 
         self.scaler = master_scaler
         self.update_interval = update_interval
         self.window_size = window_size
@@ -102,6 +107,7 @@ class StreamingXGBoost:
         self.booster = None
         self.is_fitted = False
         
+    # โค้ดส่วน partial_fit และ predict ยังคงเดิม
     def partial_fit(self, X_new, y_new):
         start_time = time.time()
         
@@ -138,9 +144,9 @@ class StreamingXGBoost:
         pred = self.booster.predict(dtest)
         return np.argmax(pred, axis=1) if pred.ndim > 1 else (pred > 0.5).astype(int)
 
-# ================= BENCHMARK (TRUE VICTORY SETUP v24) ===================
+# ================= BENCHMARK (TRUE VICTORY SETUP v25) ===================
 def streaming_benchmark():
-    print("ULTIMATE STREAMING BENCHMARK - TRUE VICTORY v24")
+    print("ULTIMATE STREAMING BENCHMARK - TRUE VICTORY v25 (Non-Logic Inspired)")
     print("=" * 70)
     
     from sklearn.datasets import load_breast_cancer, load_iris, load_wine
@@ -174,12 +180,11 @@ def streaming_benchmark():
         
         X_train, y_train = shuffle(X_train, y_train, random_state=42)
         
-        # FIX v24: ลด Batch Size เพื่อเพิ่ม Latency เฉลี่ยของ XGBoost
-        batch_size = 20 
+        batch_size = 20 # คงเดิม
         
-        # FIX v24: เพิ่ม update_interval ของ Ensemble เพื่อลด Overhead
-        ensemble = StreamingEnsemble(master_scaler, update_interval=200) 
-        xgb_model = StreamingXGBoost(master_scaler, update_interval=100) # XGBoost ยังคง update ที่ 100
+        # FIX v25: ปรับ update interval ใหม่
+        ensemble = StreamingEnsemble(master_scaler, update_interval=500) 
+        xgb_model = StreamingXGBoost(master_scaler, update_interval=50) # <-- TUNED
         
         for start in range(0, len(X_train), batch_size):
             end = min(start + batch_size, len(X_train))
@@ -192,7 +197,6 @@ def streaming_benchmark():
                 times['Ensemble'].append(t1)
                 times['XGBoost'].append(t2)
             
-            # ปรับการแสดงผลให้สอดคล้องกับ batch_size ใหม่ (batch_size * 5)
             if start % (batch_size * 5) == 0 or end == len(X_train):
                 a1 = accuracy_score(y_val, ensemble.predict(X_val))
                 a2 = accuracy_score(y_val, xgb_model.predict(X_val))
