@@ -33,6 +33,146 @@ def cpu_time():
     return p.cpu_times().user + p.cpu_times().system
 
 # ========================================
+# ONESTEP WITH FAIR FEATURES
+# ========================================
+
+class OneStepFair:
+    def __init__(self, C=1.0, use_rbf_features=False, n_components=100):
+        self.C = C
+        self.use_rbf_features = use_rbf_features
+        self.n_components = n_components
+        self.scaler = None
+        self.rbf_feature = None
+        self.W = None
+        self.classes = None
+    
+    def get_params(self, deep=True):
+        return {
+            'C': self.C,
+            'use_rbf_features': self.use_rbf_features,
+            'n_components': self.n_components
+        }
+    
+    def set_params(self, **params):
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+        
+    def fit(self, X, y):
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X).astype(np.float32)
+        
+        if self.use_rbf_features:
+            self.rbf_feature = RBFSampler(
+                gamma=1.0 / X.shape[1],
+                n_components=self.n_components,
+                random_state=42
+            )
+            X_features = self.rbf_feature.fit_transform(X_scaled).astype(np.float32)
+        else:
+            X_features = np.hstack([
+                np.ones((X_scaled.shape[0], 1), dtype=np.float32),
+                X_scaled
+            ])
+        
+        self.classes = np.unique(y)
+        n_classes = len(self.classes)
+        y_onehot = np.zeros((len(y), n_classes), dtype=np.float32)
+        for i, cls in enumerate(self.classes):
+            y_onehot[y == cls, i] = 1.0
+        
+        K = X_features @ X_features.T
+        n_samples = K.shape[0]
+        lambda_reg = self.C * np.trace(K) / n_samples
+        I_reg = np.eye(n_samples, dtype=np.float32) * lambda_reg
+        
+        self.alpha = np.linalg.solve(K + I_reg, y_onehot)
+        self.X_train_features = X_features
+            
+    def predict(self, X):
+        X_scaled = self.scaler.transform(X).astype(np.float32)
+        
+        if self.use_rbf_features:
+            X_features = self.rbf_feature.transform(X_scaled).astype(np.float32)
+        else:
+            X_features = np.hstack([
+                np.ones((X_scaled.shape[0], 1), dtype=np.float32),
+                X_scaled
+            ])
+        
+        K_test = X_features @ self.X_train_features.T
+        predictions = K_test @ self.alpha
+        return self.classes[np.argmax(predictions, axis=1)]
+
+# ========================================
+# XGBOOST WRAPPER WITH FAIR FEATURES
+# ========================================
+
+class XGBoostFair:
+    def __init__(self, n_estimators=100, max_depth=5, learning_rate=0.1,
+                 use_rbf_features=False, n_components=100):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.use_rbf_features = use_rbf_features
+        self.n_components = n_components
+        self.scaler = None
+        self.rbf_feature = None
+        self.model = None
+    
+    def get_params(self, deep=True):
+        return {
+            'n_estimators': self.n_estimators,
+            'max_depth': self.max_depth,
+            'learning_rate': self.learning_rate,
+            'use_rbf_features': self.use_rbf_features,
+            'n_components': self.n_components
+        }
+    
+    def set_params(self, **params):
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+    
+    def fit(self, X, y):
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X).astype(np.float32)
+        
+        if self.use_rbf_features:
+            self.rbf_feature = RBFSampler(
+                gamma=1.0 / X.shape[1],
+                n_components=self.n_components,
+                random_state=42
+            )
+            X_features = self.rbf_feature.fit_transform(X_scaled).astype(np.float32)
+        else:
+            X_features = X_scaled
+        
+        self.model = xgb.XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            use_label_encoder=False,
+            eval_metric='mlogloss',
+            verbosity=0,
+            random_state=42,
+            tree_method='hist',
+            n_jobs=1
+        )
+        self.model.fit(X_features, y)
+        return self
+    
+    def predict(self, X):
+        X_scaled = self.scaler.transform(X).astype(np.float32)
+        
+        if self.use_rbf_features:
+            X_features = self.rbf_feature.transform(X_scaled).astype(np.float32)
+        else:
+            X_features = X_scaled
+        
+        return self.model.predict(X_features)
+
+# ========================================
 # NEW: ฟังก์ชันบันทึกผลลัพธ์ลงไฟล์
 # ========================================
 def save_results_to_file(filename, content):
@@ -42,32 +182,28 @@ def save_results_to_file(filename, content):
     filepath = f'benchmark_results/{filename}'
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(full_content)
-    print(f"✓ Saved: {filepath}")
-
-# [ส่วน OneStepFair และ XGBoostFair class เดิม... ไม่เปลี่ยน]
+    print(f"Saved: {filepath}")
 
 # ========================================
-# PHASE 1: TUNING (EQUAL SEARCH SPACE)
+# PHASE 1: TUNING
 # ========================================
 
 def run_phase1_fair(X_train, y_train, cv, dataset_name):
     print(f"\n{'='*80}")
     print(f"PHASE 1: HYPERPARAMETER TUNING (100% FAIR)")
     print(f"{'='*80}")
-    print(f"Both models search SAME number of configurations")
-    print(f"Both models get SAME feature transformations\n")
     
     print(f"| {'Model':<15} | {'CPU Time (s)':<14} | {'Best Acc':<12} | {'Best Params':<30} |")
     print(f"|{'-'*17}|{'-'*16}|{'-'*14}|{'-'*32}|")
     
-    # --- OneStep: 6 configurations ---
+    # OneStep
     cpu_before = cpu_time()
     one_grid = GridSearchCV(
         OneStepFair(),
         {
-            'C': [0.01, 0.1, 1.0],  # 3 values
-            'use_rbf_features': [False, True],  # 2 values
-            'n_components': [100]  # Fixed
+            'C': [0.01, 0.1, 1.0],
+            'use_rbf_features': [False, True],
+            'n_components': [100]
         },
         cv=cv, scoring='accuracy', n_jobs=1
     )
@@ -78,16 +214,16 @@ def run_phase1_fair(X_train, y_train, cv, dataset_name):
     print(f"| {'OneStep':<15} | {cpu_one:<14.4f} | {acc_one:<12.4f} | {str(best_one)[:30]:<30} |")
     del one_grid; gc.collect()
     
-    # --- XGBoost: 6 configurations (SAME as OneStep) ---
+    # XGBoost
     cpu_before = cpu_time()
     xgb_grid = GridSearchCV(
         XGBoostFair(),
         {
-            'n_estimators': [50, 100],  # 2 values
-            'max_depth': [3, 5],  # 2 values  
-            'learning_rate': [0.1],  # 1 value
-            'use_rbf_features': [False, True],  # 2 values → 2×2×1×2 = 8
-            'n_components': [100]  # Fixed
+            'n_estimators': [50, 100],
+            'max_depth': [3, 5],
+            'learning_rate': [0.1],
+            'use_rbf_features': [False, True],
+            'n_components': [100]
         },
         cv=cv, scoring='accuracy', n_jobs=1
     )
@@ -107,11 +243,10 @@ def run_phase1_fair(X_train, y_train, cv, dataset_name):
     print(f"WINNER: {winner}")
     print(f"{'-'*80}")
     
-    # NEW: บันทึก Phase 1 ลงไฟล์
     phase1_content = f"""PHASE 1 RESULTS for {dataset_name}:
 OneStep: CPU={cpu_one:.4f}s, Acc={acc_one:.4f}, Params={best_one}
 XGBoost: CPU={cpu_xgb:.4f}s, Acc={acc_xgb:.4f}, Params={best_xgb}
-Speedup: {speedup:.2f}x | Acc Diff: {acc_diff:.4f} | Winner: {winner}"""
+Speedup: {speedup:.2f}x | Winner: {winner}"""
     save_results_to_file(f"{dataset_name.lower()}_phase1.txt", phase1_content)
     
     return {
@@ -120,40 +255,39 @@ Speedup: {speedup:.2f}x | Acc Diff: {acc_diff:.4f} | Winner: {winner}"""
     }
 
 # ========================================
-# PHASE 2: RETRAIN (100x REPETITION)
+# PHASE 2: RETRAIN
 # ========================================
 
 def run_phase2_fair(X_train, y_train, X_test, y_test, phase1, dataset_name):
     print(f"\n{'='*80}")
     print(f"PHASE 2: RETRAINING (100x REPETITION FOR STABLE MEASUREMENT)")
     print(f"{'='*80}")
-    print(f"Both models use BEST parameters from Phase 1\n")
     
-    reps = 100  # Reduced from 1000 to 100 for faster execution
+    reps = 100
     
-    # --- OneStep ---
+    # OneStep
     print(f"Training OneStep 100x with {phase1['onestep']['params']}...")
-    cpu_times_one = []
+    cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
         model = OneStepFair(**phase1['onestep']['params'])
         model.fit(X_train, y_train)
-        cpu_times_one.append(cpu_time() - cpu_before)
-    cpu_one = np.mean(cpu_times_one)
-    cpu_one_std = np.std(cpu_times_one)
+        cpu_times.append(cpu_time() - cpu_before)
+    cpu_one = np.mean(cpu_times)
+    cpu_one_std = np.std(cpu_times)
     pred_one = model.predict(X_test)
     acc_one = accuracy_score(y_test, pred_one)
     
-    # --- XGBoost ---
+    # XGBoost
     print(f"Training XGBoost 100x with {phase1['xgboost']['params']}...")
-    cpu_times_xgb = []
+    cpu_times = []
     for _ in range(reps):
         cpu_before = cpu_time()
         model = XGBoostFair(**phase1['xgboost']['params'])
         model.fit(X_train, y_train)
-        cpu_times_xgb.append(cpu_time() - cpu_before)
-    cpu_xgb = np.mean(cpu_times_xgb)
-    cpu_xgb_std = np.std(cpu_times_xgb)
+        cpu_times.append(cpu_time() - cpu_before)
+    cpu_xgb = np.mean(cpu_times)
+    cpu_xgb_std = np.std(cpu_times)
     pred_xgb = model.predict(X_test)
     acc_xgb = accuracy_score(y_test, pred_xgb)
     
@@ -166,16 +300,15 @@ def run_phase2_fair(X_train, y_train, X_test, y_test, phase1, dataset_name):
     speedup = cpu_xgb / cpu_one if cpu_one > 0 else float('inf')
     acc_diff = acc_one - acc_xgb
     winner = 'OneStep' if acc_one >= acc_xgb and speedup > 1 else 'XGBoost' if acc_xgb > acc_one else 'TIE'
-    print(f"SPEEDUP: OneStep is {speedup:.2f}x faster (±{cpu_one_std:.6f}s vs ±{cpu_xgb_std:.6f}s)")
+    print(f"SPEEDUP: OneStep is {speedup:.2f}x faster")
     print(f"ACCURACY: OneStep {'+' if acc_diff >= 0 else ''}{acc_diff:.4f} vs XGBoost")
     print(f"WINNER: {winner}")
     print(f"{'-'*80}")
     
-    # NEW: บันทึก Phase 2 ลงไฟล์
     phase2_content = f"""PHASE 2 RESULTS for {dataset_name}:
 OneStep: CPU={cpu_one:.6f}±{cpu_one_std:.6f}s, Test Acc={acc_one:.4f}
 XGBoost: CPU={cpu_xgb:.6f}±{cpu_xgb_std:.6f}s, Test Acc={acc_xgb:.4f}
-Speedup: {speedup:.2f}x | Acc Diff: {acc_diff:.4f} | Winner: {winner}"""
+Speedup: {speedup:.2f}x | Winner: {winner}"""
     save_results_to_file(f"{dataset_name.lower()}_phase2.txt", phase2_content)
     
     return {
@@ -184,7 +317,7 @@ Speedup: {speedup:.2f}x | Acc Diff: {acc_diff:.4f} | Winner: {winner}"""
     }
 
 # ========================================
-# MAIN BENCHMARK
+# MAIN
 # ========================================
 
 def ultimate_fair_benchmark():
@@ -200,20 +333,18 @@ def ultimate_fair_benchmark():
     print("ULTIMATE FAIR BENCHMARK - 100% NO CHEATING")
     print("=" * 100)
     print("\nFairness Guarantees:")
-    print("  ✓ Both models get SAME feature transformations (RBF optional)")
-    print("  ✓ Both models search SIMILAR number of hyperparameters")
-    print("  ✓ Single-threaded (n_jobs=1) for both")
-    print("  ✓ CPU time measurement (not wall clock)")
-    print("  ✓ 100x repetition for stable speed measurement (< 2 min total)")
-    print("  ✓ Same train/test split, same CV folds")
-    print("  ✓ Same random seeds everywhere")
+    print("  Check: Both models get SAME feature transformations (RBF optional)")
+    print("  Check: Both models search SIMILAR number of hyperparameters")
+    print("  Check: Single-threaded (n_jobs=1) for both")
+    print("  Check: CPU time measurement (not wall clock)")
+    print("  Check: 100x repetition for stable speed measurement (< 2 min total)")
+    print("  Check: Same train/test split, same CV folds")
+    print("  Check: Same random seeds everywhere")
     print("=" * 100)
     
     results = {
-        'onestep_acc_wins': 0,
-        'onestep_speed_wins': 0,
-        'xgb_acc_wins': 0,
-        'xgb_speed_wins': 0,
+        'onestep_acc_wins': 0, 'onestep_speed_wins': 0,
+        'xgb_acc_wins': 0, 'xgb_speed_wins': 0,
         'total': len(datasets)
     }
     
@@ -231,13 +362,9 @@ def ultimate_fair_benchmark():
         print(f"Features: {X.shape[1]}")
         print(f"Classes: {len(np.unique(y))}")
         
-        # Phase 1: Tuning
         phase1 = run_phase1_fair(X_train, y_train, cv, name)
-        
-        # Phase 2: Retraining
         phase2 = run_phase2_fair(X_train, y_train, X_test, y_test, phase1, name)
         
-        # Track wins
         if phase2['onestep']['acc'] >= phase2['xgboost']['acc']:
             results['onestep_acc_wins'] += 1
         else:
@@ -248,7 +375,6 @@ def ultimate_fair_benchmark():
         else:
             results['xgb_speed_wins'] += 1
     
-    # Final Summary
     print(f"\n\n{'='*100}")
     print(f"FINAL VERDICT - ULTIMATE FAIR COMPARISON")
     print(f"{'='*100}\n")
@@ -265,32 +391,12 @@ def ultimate_fair_benchmark():
     onestep_total = results['onestep_acc_wins'] + results['onestep_speed_wins']
     xgb_total = results['xgb_acc_wins'] + results['xgb_speed_wins']
     overall_winner = 'ONESTEP WINS!' if onestep_total > xgb_total else 'XGBOOST WINS!' if xgb_total > onestep_total else 'TIE!'
-    print(f"  🏆 {overall_winner} ({onestep_total if onestep_total > xgb_total else xgb_total}/{results['total']*2} metrics)")
-    if onestep_total > xgb_total:
-        print(f"     ✓ Fair comparison with equal opportunities")
-        print(f"     ✓ Both models got same feature transformations")
-        print(f"     ✓ Both models searched similar hyperparameter space")
-    elif xgb_total > onestep_total:
-        print(f"     ✓ Fair comparison - XGBoost is genuinely better")
-    else:
-        print(f"  🤝 TIE! Both models win equally")
+    print(f"  {overall_winner} ({onestep_total if onestep_total > xgb_total else xgb_total}/{results['total']*2} metrics)")
     
-    print(f"\n{'='*100}")
-    print(f"This benchmark is 100% FAIR because:")
-    print(f"  1. Same preprocessing (StandardScaler)")
-    print(f"  2. Same optional features (RBF approximation)")
-    print(f"  3. Similar hyperparameter search space")
-    print(f"  4. Single-threaded execution")
-    print(f"  5. CPU time measurement (100x reps for speed)")
-    print(f"  6. Statistical significance (mean ± std)")
-    print(f"  7. Completes in < 2 minutes (optimized for CI/CD)")
-    print(f"{'='*100}")
-    
-    # NEW: บันทึก Final Summary ลงไฟล์
     final_content = f"""FINAL SUMMARY:
 Accuracy Wins - OneStep: {results['onestep_acc_wins']}/{results['total']}, XGBoost: {results['xgb_acc_wins']}/{results['total']}
 Speed Wins - OneStep: {results['onestep_speed_wins']}/{results['total']}, XGBoost: {results['xgb_speed_wins']}/{results['total']}
-Overall: {overall_winner} ({onestep_total if onestep_total > xgb_total else xgb_total}/{results['total']*2} metrics)"""
+Overall: {overall_winner}"""
     save_results_to_file("final_summary.txt", final_content)
 
 
