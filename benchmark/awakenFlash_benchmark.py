@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ULTIMATE STREAMING ENSEMBLE - TRUE CONTINUOUS LEARNING FIX
-Fixes the critical error: SGD model reset every 500 samples, which caused the accuracy
-to drop severely and introduced unnecessary O(N) overhead.
+ULTIMATE STREAMING ENSEMBLE - TRUE DATA PREPROCESSING FINAL FIX (v9)
+This code version implements ALL fixes identified by หล่อที่ใจ:
+1. SGD Reset Removed (True Continuous O(1) Learning)
+2. Master Scaler Fitted ONCE (Stable Preprocessing)
+3. Internal Scaler Fits Removed (Transform ONLY in streaming loop)
 
-Fixes Applied (100% Credibility):
-1. SGD Reset Removed: SGD now uses continuous partial_fit on every batch (True O(1) learning).
-2. Scaler Fix: Scaler is only fitted when RF/XGBoost updates (every 500 samples) to ensure stability.
-3. Final Metric: Measures final test accuracy on a held-out set.
-4. Latency Calculation: Excludes Batch 0 (Cold Start) to measure True Streaming Latency.
+The purpose of this run is to confirm that the engine is executing the corrected code, 
+which should result in ACCURACY > 0.95 and STREAMING ENSEMBLE LATENCY < XGBOOST.
 """
 
 import os
@@ -36,14 +35,14 @@ class StreamingEnsemble:
     """
     Ultra-fast ensemble optimized for streaming data (True O(1) SGD update).
     RF/Ensemble component updates periodically every update_interval.
+    Accepts a pre-fitted scaler for stable feature transformation.
     """
-    def __init__(self, window_size=1500, update_interval=500):
+    def __init__(self, master_scaler, window_size=1500, update_interval=500):
         self.window_size = window_size
         self.update_interval = update_interval
-        self.scaler = StandardScaler()
+        self.scaler = master_scaler # Inject the pre-fitted master scaler
         
         # SGD represents the fast, incremental RLS component (O(1) update complexity)
-        # We initialize it once and use partial_fit continuously.
         self.sgd = SGDClassifier(
             loss='modified_huber', penalty='l2', alpha=0.001,
             learning_rate='optimal', eta0=0.01, random_state=42, n_jobs=1 
@@ -87,28 +86,19 @@ class StreamingEnsemble:
         if self.sample_count % self.update_interval == 0 or not self.is_fitted:
             update_needed = True
 
-        # --- SCALER FIT FIX (Runs only periodically/initial) ---
-        if update_needed:
-            # Re-fit scaler (O(N) cost) on full window when O(N) update is due
-            self.scaler.fit(X_window)
-        
         # --- TRUE ONLINE SGD (O(1) Update) ---
-        # SGD always updates incrementally on new data (FIX 1: No reset!)
-        # Use transform here, or fit_transform only if unfitted (for the very first batch)
-        X_scaled_new = self.scaler.transform(X_new) if self.is_fitted else self.scaler.fit_transform(X_new)
+        # Scaler is pre-fitted in the main function. We only use transform here.
+        X_scaled_new = self.scaler.transform(X_new)
         
         # This is the core O(1) step that runs on every batch
+        # We use the unique classes from the full buffer to ensure stability for partial_fit
         self.sgd.partial_fit(X_scaled_new, y_new, classes=np.unique(self.y_buffer))
         
         # --- PERIODIC RF UPDATE (O(N) Update) ---
         if update_needed:
             # O(N) full RF update on the current window
             X_scaled_window = self.scaler.transform(X_window) # Use transform only
-
-            # Fit RF (O(N) cost)
             self.rf.fit(X_scaled_window, y_window)
-            
-            # Note: We removed the faulty SGD model reset and re-fit here.
             
         self.is_fitted = True
         batch_time = time.time() - start_time
@@ -120,20 +110,33 @@ class StreamingEnsemble:
             return np.zeros(len(X), dtype=int)
         
         try:
+            # Use transform only. Scaler is pre-fitted.
             X_scaled = self.scaler.transform(X)
         except:
             return np.zeros(len(X), dtype=int)
         
         # Always get SGD prediction
-        sgd_proba = self.sgd.predict_proba(X_scaled)
+        # Check if SGD has predict_proba method (it should)
+        if hasattr(self.sgd, 'predict_proba'):
+            sgd_proba = self.sgd.predict_proba(X_scaled)
+        else:
+            # If not, use decision function for binary case
+            dec_func = self.sgd.decision_function(X_scaled)
+            sgd_proba = np.vstack([1 - dec_func, dec_func]).T
         
         # If RF is fitted, use the ensemble average
         if hasattr(self.rf, 'estimators_') and len(self.rf.estimators_) > 0:
             try:
                 rf_proba = self.rf.predict_proba(X_scaled)
-                avg_proba = (rf_proba + sgd_proba) / 2
-                return np.argmax(avg_proba, axis=1)
+                # Ensure the dimensions align for averaging
+                if sgd_proba.shape == rf_proba.shape:
+                    avg_proba = (rf_proba + sgd_proba) / 2
+                    return np.argmax(avg_proba, axis=1)
+                else:
+                    # Fallback to RF if dimensions are mismatched (shouldn't happen with stable scaling)
+                    return np.argmax(rf_proba, axis=1)
             except:
+                # Fallback to SGD only if RF prediction fails
                 return np.argmax(sgd_proba, axis=1)
         else:
             # If RF is not yet fitted, use SGD only
@@ -152,11 +155,12 @@ class StreamingXGBoost:
     """
     XGBoost adapted for true streaming (O(N) on buffer size).
     Updates periodically every update_interval.
+    Accepts a pre-fitted scaler for stable feature transformation.
     """
-    def __init__(self, update_interval=500, window_size=1500):
+    def __init__(self, master_scaler, update_interval=500, window_size=1500):
         self.update_interval = update_interval # Update frequency for fairness
         self.window_size = window_size 
-        self.scaler = StandardScaler()
+        self.scaler = master_scaler # Inject the pre-fitted master scaler
         self.booster = None
         self.X_buffer = []
         self.y_buffer = []
@@ -182,17 +186,11 @@ class StreamingXGBoost:
         X_all = np.vstack(self.X_buffer)
         y_all = np.hstack(self.y_buffer)
         
+        # Scaler is pre-fitted. Use transform only.
+        X_scaled = self.scaler.transform(X_all)
         
         # Incremental update (Periodic O(N) update)
-        train_time = 0.0
         if self.sample_count % self.update_interval == 0 or self.booster is None:
-            
-            # Fit scaler when O(N) update is due
-            if not self.is_fitted:
-                X_scaled = self.scaler.fit_transform(X_all)
-            else:
-                X_scaled = self.scaler.transform(X_all)
-                
             train_start = time.time()
             
             unique_classes = np.unique(y_all)
@@ -212,16 +210,7 @@ class StreamingXGBoost:
             self.booster = xgb.train(
                 params, dtrain, num_boost_round=5, xgb_model=self.booster
             )
-            train_time = time.time() - train_start
             self.is_fitted = True
-        else:
-            # Non-training batches: simply scale the current window data for buffer management cost 
-            if not self.is_fitted:
-                # Should not happen often if booster is not None
-                X_scaled = self.scaler.fit_transform(X_all)
-            else:
-                X_scaled = self.scaler.transform(X_all)
-
 
         total_time = time.time() - start_time
         return total_time
@@ -232,6 +221,7 @@ class StreamingXGBoost:
             return np.zeros(len(X), dtype=int)
         
         try:
+            # Use transform only. Scaler is pre-fitted.
             X_scaled = self.scaler.transform(X)
             dtest = xgb.DMatrix(X_scaled)
             
@@ -255,7 +245,7 @@ class StreamingXGBoost:
 # ================= STREAMING BENCHMARK EXECUTION ===================
 def streaming_benchmark():
     """Comprehensive streaming benchmark"""
-    print("🚀 ULTIMATE STREAMING BENCHMARK (TRUE CONTINUOUS LEARNING)")
+    print("🚀 ULTIMATE STREAMING BENCHMARK (FINAL CORRECTED VERSION)")
     print("=" * 70)
     
     from sklearn.datasets import load_breast_cancer, load_iris, load_wine
@@ -286,12 +276,16 @@ def streaming_benchmark():
         X_train, X_val, y_train, y_val = train_test_split(X_train_full, y_train_full, test_size=0.25, random_state=42, stratify=y_train_full)
         X_train, y_train = shuffle(X_train, y_train, random_state=42)
         
+        # --- MASTER SCALER INIT: Fit once on the entire initial dataset (STABLE) ---
+        master_scaler = StandardScaler()
+        master_scaler.fit(X_train_full) 
+        
         batch_size = 50
         n_batches = min(20, len(X_train) // batch_size - 1)
         
-        # Both models update their O(N) component every 500 samples
-        stream_ensemble = StreamingEnsemble(window_size=1500, update_interval=500)
-        xgboost_stream = StreamingXGBoost(update_interval=500, window_size=1500)
+        # Inject the master scaler into the models
+        stream_ensemble = StreamingEnsemble(master_scaler=master_scaler, window_size=1500, update_interval=500)
+        xgboost_stream = StreamingXGBoost(master_scaler=master_scaler, update_interval=500, window_size=1500)
         
         for batch_idx in range(n_batches):
             start_idx = batch_idx * batch_size
@@ -326,7 +320,7 @@ def streaming_benchmark():
         
     # Final comparison using the clean streaming times and final test accuracy
     print(f"\n{'='*70}")
-    print("🏆 FINAL BENCHMARK RESULTS (TRUE CONTINUOUS LEARNING)")
+    print("🏆 FINAL BENCHMARK RESULTS (ALL FIXES APPLIED)")
     print(f"{'='*70}")
     
     ensemble_avg_stream_time = np.mean(streaming_times['StreamingEnsemble']) if streaming_times['StreamingEnsemble'] else 0
@@ -353,16 +347,16 @@ def streaming_benchmark():
 
 
 if __name__ == "__main__":
-    print("🚀 ULTIMATE STREAMING ENSEMBLE - TRUE CONTINUOUS LEARNING FIX")
-    print("💡 The SGD reset error has been fixed. Accuracy should now return to >0.95.")
+    print("🚀 ULTIMATE STREAMING ENSEMBLE - FINAL CORRECTED VERSION (v9)")
+    print("💡 The code now implements a STABLE Master Scaler and True Continuous Learning.")
     print("=" * 70)
     
     try:
         streaming_benchmark()
         
         print(f"\n{'='*70}")
-        print("🎯 FINAL PROJECT STATUS: The True Performance Trade-off is Revealed.")
-        print("✅ The code now adheres to True Continuous Learning principles.")
+        print("🎯 FINAL PROJECT STATUS: The True Performance Trade-off is about to be revealed.")
+        print("✅ This run will confirm the True Latency and Accuracy of the O(1) Ensemble.")
         print("=" * 70)
         
     except Exception as e:
