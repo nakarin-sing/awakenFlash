@@ -29,21 +29,26 @@ jobs:
       - name: Create results directory
         run: |
           mkdir -p benchmark_results
-          echo "Directory 'benchmark_results' created."
+          echo "✓ Directory 'benchmark_results' created."
 
-      - name: Run benchmark script
+      - name: Run benchmark
         run: |
           python benchmark/awakenFlash_benchmark.py
 
       - name: List generated files (Debug)
         run: |
           echo "Files in benchmark_results/:"
-          ls -la benchmark_results/ || echo "No files found in benchmark_results/"
+          if [ -d "benchmark_results" ]; then
+            ls -la benchmark_results/ | grep -v '^total' || echo "  (empty)"
+          else
+            echo "  Directory not found!"
+          fi
 
-      - name: Upload benchmark results as artifact
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: awakenFlash-benchmark-results-${{ github.run_number }}
           path: benchmark_results/
           retention-days: 30
-          if-no-files-found: warn   # ไม่ error ถ้าไม่มีไฟล์
+          if-no-files-found: warn
+          compression-level: 6
