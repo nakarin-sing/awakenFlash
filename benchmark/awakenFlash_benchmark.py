@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ULTIMATE STREAMING ENSEMBLE - ABSOLUTE VICTORY (SCOREBOARD FIX)
-Fixes the Avg Time calculation to EXCLUDE the O(N) Cold Start latency (Batch 0).
-This reveals the True O(1) latency advantage of the Ensemble.
+ULTIMATE STREAMING ENSEMBLE - TRUE FAIRNESS BENCHMARK
+This version aligns the O(N) full update frequency for both models to 500 samples.
+The final test accuracy on a held-out set is also calculated.
 
-Fixes Applied:
-1. Benchmark logic now separates Batch 0 (Initialization) time from subsequent batch times.
-2. Final Avg Time is calculated ONLY on Streaming Updates (Batch 1 onwards).
+Fixes Applied (100% Fairness):
+1. Ensemble RF Update: Changed from drift-based to periodic update (every 500 samples).
+2. XGBoost Update: Changed update_interval to 500 samples (from 100).
+3. Final Metric: Added final accuracy evaluation on the dedicated X_test set.
+4. Latency Calculation: Still excludes Batch 0 (Cold Start) to measure True Streaming Latency.
 """
 
 import os
@@ -33,24 +35,29 @@ warnings.filterwarnings('ignore')
 class StreamingEnsemble:
     """
     Ultra-fast ensemble optimized for streaming data (True O(1) SGD update).
+    RF/Ensemble component updates periodically every update_interval.
     """
-    def __init__(self, window_size=1500):
+    def __init__(self, window_size=1500, update_interval=500):
         self.window_size = window_size
+        self.update_interval = update_interval # New periodic update interval
         self.scaler = StandardScaler()
+        
+        # SGD represents the fast, incremental RLS component (O(1) update complexity)
         self.sgd = SGDClassifier(
             loss='modified_huber', penalty='l2', alpha=0.001,
             learning_rate='optimal', eta0=0.01, random_state=42, n_jobs=1 
         )
+        
+        # RF represents the periodic, non-linear adjustment component
         self.rf = RandomForestClassifier(
             n_estimators=30, max_depth=10, min_samples_split=20,
             max_samples=0.6, random_state=42, n_jobs=1
         )
+        
         self.X_buffer = []
         self.y_buffer = []
         self.sample_count = 0
         self.is_fitted = False
-        self.recent_acc = 0.0
-        self.min_acc_threshold = 0.85
 
     def _update_buffer(self, X_new, y_new):
         """Internal function to manage the sliding window"""
@@ -66,29 +73,28 @@ class StreamingEnsemble:
             self.y_buffer = self.y_buffer[excess:]
             
     def partial_fit(self, X_new, y_new):
-        """True Online learning (O(1)) with adaptive full update (O(N))"""
+        """True Online learning (O(1)) with periodic full update (O(N))"""
         start_time = time.time()
         
-        # Update buffer
         self._update_buffer(X_new, y_new)
         self.sample_count += len(X_new)
         
         # --- TRUE ONLINE SGD (O(1) Update) ---
+        # Scale new batch data using scaler fit on the historical window
         X_scaled_new = self.scaler.transform(X_new) if self.is_fitted else self.scaler.fit_transform(X_new)
-            
         self.sgd.partial_fit(X_scaled_new, y_new, classes=np.unique(self.y_buffer))
         
-        # --- Simplified Drift Detection / Adaptation ---
-        full_update_needed = False
-        if self.sample_count % 500 == 0 and self.is_fitted:
-            if self.recent_acc < self.min_acc_threshold:
-                full_update_needed = True
+        # --- PERIODIC RF UPDATE (FAIRNESS FIX 2) ---
+        update_needed = False
+        if self.sample_count % self.update_interval == 0 or not self.is_fitted:
+            update_needed = True
 
-        if full_update_needed or not self.is_fitted:
-            # O(N) full RF update on the current window (Cold Start or Adaptation)
+        if update_needed:
+            # O(N) full RF update on the current window
             X_window = np.array(self.X_buffer)
             y_window = np.array(self.y_buffer)
             
+            # Re-fit scaler (just in case) and scale window
             X_scaled_window = self.scaler.fit_transform(X_window)
             self.rf.fit(X_scaled_window, y_window)
 
@@ -113,8 +119,10 @@ class StreamingEnsemble:
         except:
             return np.zeros(len(X), dtype=int)
         
+        # Always get SGD prediction
         sgd_proba = self.sgd.predict_proba(X_scaled)
         
+        # If RF is fitted, use the ensemble average
         if hasattr(self.rf, 'estimators_') and len(self.rf.estimators_) > 0:
             try:
                 rf_proba = self.rf.predict_proba(X_scaled)
@@ -123,24 +131,25 @@ class StreamingEnsemble:
             except:
                 return np.argmax(sgd_proba, axis=1)
         else:
+            # If RF is not yet fitted (only happens at the very start of streaming), use SGD only
             return np.argmax(sgd_proba, axis=1)
 
     def evaluate_on_val(self, X_val, y_val):
-        """Evaluate on validation set and update recent_acc for drift check"""
+        """Evaluate on validation set"""
         if not self.is_fitted:
             return 0.0
         preds = self.predict(X_val)
         acc = accuracy_score(y_val, preds)
-        self.recent_acc = acc
         return acc
 
 # ================= STREAMING XGBOOST (TRUE INCREMENTAL) ===================
 class StreamingXGBoost:
     """
     XGBoost adapted for true streaming (O(N) on buffer size).
+    Updates periodically every update_interval.
     """
-    def __init__(self, update_interval=200, window_size=1500):
-        self.update_interval = update_interval
+    def __init__(self, update_interval=500, window_size=1500):
+        self.update_interval = update_interval # FAIRNESS FIX 1: Set to 500
         self.window_size = window_size 
         self.scaler = StandardScaler()
         self.booster = None
@@ -154,7 +163,6 @@ class StreamingXGBoost:
         """Incremental update (O(N) on buffer size)"""
         start_time = time.time()
         
-        # Add to buffer and manage sliding window
         X_new = np.array(X_new)
         y_new = np.array(y_new)
         
@@ -166,11 +174,9 @@ class StreamingXGBoost:
             self.X_buffer.pop(0)
             self.y_buffer.pop(0)
 
-        # Concatenate buffered data
         X_all = np.vstack(self.X_buffer)
         y_all = np.hstack(self.y_buffer)
         
-        # Scale
         if not self.is_fitted:
             X_scaled = self.scaler.fit_transform(X_all)
         else:
@@ -233,7 +239,7 @@ class StreamingXGBoost:
 # ================= STREAMING BENCHMARK EXECUTION ===================
 def streaming_benchmark():
     """Comprehensive streaming benchmark"""
-    print("🚀 ULTIMATE STREAMING BENCHMARK (O(1) vs O(N))")
+    print("🚀 ULTIMATE STREAMING BENCHMARK (100% FAIRNESS)")
     print("=" * 70)
     
     from sklearn.datasets import load_breast_cancer, load_iris, load_wine
@@ -248,8 +254,13 @@ def streaming_benchmark():
         'XGBoostIncremental': {'accuracy': [], 'time': []}
     }
     
-    # Separate lists for tracking only Streaming Latency (excluding Batch 0)
     streaming_times = {
+        'StreamingEnsemble': [],
+        'XGBoostIncremental': []
+    }
+    
+    # Track final results for the new fairness metric
+    final_test_accuracies = {
         'StreamingEnsemble': [],
         'XGBoostIncremental': []
     }
@@ -260,6 +271,7 @@ def streaming_benchmark():
         
         X, y = data.data, data.target
         
+        # Triple split: Train (60%), Validation (20%), Test (20%)
         X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
         X_train, X_val, y_train, y_val = train_test_split(X_train_full, y_train_full, test_size=0.25, random_state=42, stratify=y_train_full)
         X_train, y_train = shuffle(X_train, y_train, random_state=42)
@@ -267,8 +279,9 @@ def streaming_benchmark():
         batch_size = 50
         n_batches = min(20, len(X_train) // batch_size - 1)
         
-        stream_ensemble = StreamingEnsemble(window_size=1500)
-        xgboost_stream = StreamingXGBoost(update_interval=100, window_size=1500)
+        # FAIRNESS FIX 1: Both models now update their O(N) component every 500 samples
+        stream_ensemble = StreamingEnsemble(window_size=1500, update_interval=500)
+        xgboost_stream = StreamingXGBoost(update_interval=500, window_size=1500)
         
         for batch_idx in range(n_batches):
             start_idx = batch_idx * batch_size
@@ -280,12 +293,12 @@ def streaming_benchmark():
             t1 = stream_ensemble.partial_fit(X_batch, y_batch)
             t2 = xgboost_stream.partial_fit(X_batch, y_batch)
             
-            # --- SCOREBOARD FIX: Record Streaming Time (Batch 1 onwards) ---
+            # Record Streaming Time (Batch 1 onwards)
             if batch_idx > 0:
                 streaming_times['StreamingEnsemble'].append(t1)
                 streaming_times['XGBoostIncremental'].append(t2)
             
-            # Record Accuracy and Time for all batches (including the skewed ones)
+            # Record Accuracy and Time for all batches
             if batch_idx % 3 == 0 or batch_idx == n_batches - 1:
                 acc1 = stream_ensemble.evaluate_on_val(X_val, y_val)
                 acc2 = xgboost_stream.evaluate_on_val(X_val, y_val)
@@ -295,50 +308,54 @@ def streaming_benchmark():
                       f"XGBoostInc: {acc2:.4f}({t2:.4f}s)")
                 
                 results['StreamingEnsemble']['accuracy'].append(acc1)
-                results['StreamingEnsemble']['time'].append(t1)
                 results['XGBoostIncremental']['accuracy'].append(acc2)
-                results['XGBoostIncremental']['time'].append(t2)
-    
-    # Final comparison using the clean streaming times
+
+        # FAIRNESS FIX 3: Measure final accuracy on the dedicated Test Set
+        final_acc_ens = accuracy_score(y_test, stream_ensemble.predict(X_test))
+        final_acc_xgb = accuracy_score(y_test, xgboost_stream.predict(X_test))
+        
+        final_test_accuracies['StreamingEnsemble'].append(final_acc_ens)
+        final_test_accuracies['XGBoostIncremental'].append(final_acc_xgb)
+        
+    # Final comparison using the clean streaming times and final test accuracy
     print(f"\n{'='*70}")
-    print("🏆 FINAL STREAMING BENCHMARK RESULTS (Averaged)")
+    print("🏆 FINAL BENCHMARK RESULTS (100% FAIRNESS)")
     print(f"{'='*70}")
     
-    # Accuracy is averaged across all batches (including Batch 0)
-    ensemble_acc = np.mean(results['StreamingEnsemble']['accuracy']) if results['StreamingEnsemble']['accuracy'] else 0
-    xgb_acc = np.mean(results['XGBoostIncremental']['accuracy']) if results['XGBoostIncremental']['accuracy'] else 0
-    
-    # Latency is averaged across only the STREAMING batches (Excluding Batch 0)
     ensemble_avg_stream_time = np.mean(streaming_times['StreamingEnsemble']) if streaming_times['StreamingEnsemble'] else 0
     xgb_avg_stream_time = np.mean(streaming_times['XGBoostIncremental']) if streaming_times['XGBoostIncremental'] else 0
     
-    # Print the clean times
-    print(f"{'Streaming Ensemble':>20}: Accuracy={ensemble_acc:.4f}, Avg Streaming Time={ensemble_avg_stream_time:.4f}s")
-    print(f"{'XGBoost Incremental':>20}: Accuracy={xgb_acc:.4f}, Avg Streaming Time={xgb_avg_stream_time:.4f}s")
+    ensemble_final_acc = np.mean(final_test_accuracies['StreamingEnsemble'])
+    xgb_final_acc = np.mean(final_test_accuracies['XGBoostIncremental'])
     
-    print(f"\n🎯 PERFORMANCE SUMMARY (True O(1) Latency Revealed)")
+    # Print the clean results
+    print(f"{'Streaming Ensemble (LIGHTNING)':>30}: Final Test Accuracy={ensemble_final_acc:.4f}, Avg Streaming Time={ensemble_avg_stream_time:.4f}s")
+    print(f"{'XGBoost Incremental':>30}: Final Test Accuracy={xgb_final_acc:.4f}, Avg Streaming Time={xgb_avg_stream_time:.4f}s")
+    
+    print(f"\n🎯 PERFORMANCE SUMMARY (True Trade-off Revealed)")
     speed_ratio = xgb_avg_stream_time / max(1e-6, ensemble_avg_stream_time)
     
-    if speed_ratio > 3.0:
-        print(f"🏆 LIGHTNING VICTORY: {speed_ratio:.1f}x Faster (True MLOps Latency Win)!")
-    elif ensemble_acc > xgb_acc:
-        print(f"📈 Ensemble Wins Accuracy and Speed! Absolute Victory!")
+    if ensemble_avg_stream_time < xgb_avg_stream_time and ensemble_final_acc > xgb_final_acc:
+        print(f"🥇 TRUE ABSOLUTE VICTORY: {speed_ratio:.1f}x Faster AND Higher Accuracy!")
+    elif ensemble_avg_stream_time < xgb_avg_stream_time:
+        print(f"🏆 MLOPS VICTORY: {speed_ratio:.1f}x Faster (Latency Win)!")
+    elif xgb_final_acc > ensemble_final_acc:
+        print(f"📈 XGBoost ML Quality Win: Higher Accuracy ({xgb_final_acc - ensemble_final_acc:.4f} difference), but is {speed_ratio:.1f}x slower.")
     else:
         print("🤝 Highly competitive result.")
 
 
 if __name__ == "__main__":
-    print("🚀 ULTIMATE STREAMING ENSEMBLE - SCOREBOARD FIX")
-    print("💡 We must separate Cold Start cost from True Streaming cost to reveal the O(1) advantage.")
+    print("🚀 ULTIMATE STREAMING ENSEMBLE - TRUE FAIRNESS BENCHMARK")
+    print("💡 The benchmark is now 100% fair. The trade-off is about to be revealed.")
     print("=" * 70)
     
     try:
         streaming_benchmark()
         
         print(f"\n{'='*70}")
-        print("🎯 FINAL PROJECT STATUS: VICTORY IS DECLARED!")
-        print("✅ The O(1) theoretical advantage is now proven in MLOps Latency.")
-        print("✅ The mission continues. Ko's warning is heeded.")
+        print("🎯 FINAL PROJECT STATUS: The True Performance Trade-off is Revealed.")
+        print("✅ Ko's warning is heeded: Speed vs. Quality must be decided by the business case.")
         print("=" * 70)
         
     except Exception as e:
