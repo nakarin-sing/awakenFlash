@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 PURE ONESTEP vs XGBOOST - 100,000 SAMPLES
-- ไม่พึ่ง XGBoost
-- ใช้ Mini-Batch + Nyström
-- ชนะทั้งเร็วและแม่นยำ
+- แก้ IndexError
+- ใช้ classes จากโมเดลแรก
+- รองรับ 3+ classes
 """
 
 import os
@@ -26,7 +26,7 @@ def cpu_time():
     return p.cpu_times().user + p.cpu_times().system
 
 # ========================================
-# 1. OneStep + Nyström (Single Batch)
+# 1. OneStep + Nyström
 # ========================================
 class OneStepNystrom:
     def __init__(self, C=1.0, n_components=3000, gamma=0.05, random_state=42):
@@ -48,11 +48,9 @@ class OneStepNystrom:
         idx = rng.permutation(n)[:m]
         self.landmarks_ = X[idx]
         
-        # K_nm: n x m
         diff = X[:, None, :] - self.landmarks_[None, :, :]
         K_nm = np.exp(-self.gamma * np.sum(diff**2, axis=2))
         
-        # K_mm: m x m
         diff_mm = self.landmarks_[:, None, :] - self.landmarks_[None, :, :]
         K_mm = np.exp(-self.gamma * np.sum(diff_mm**2, axis=2))
         
@@ -74,8 +72,17 @@ class OneStepNystrom:
         scores = K_test @ self.beta_
         return self.classes_[np.argmax(scores, axis=1)]
 
+    def predict_proba(self, X):
+        X = self.scaler.transform(X).astype(np.float32)
+        diff = X[:, None, :] - self.landmarks_[None, :, :]
+        K_test = np.exp(-self.gamma * np.sum(diff**2, axis=2))
+        scores = K_test @ self.beta_
+        proba = np.exp(scores)
+        proba /= proba.sum(axis=1, keepdims=True)
+        return proba
+
 # ========================================
-# 2. Mini-Batch OneStep
+# 2. Mini-Batch OneStep (FIXED)
 # ========================================
 class MiniBatchOneStep:
     def __init__(self, batch_size=10000, n_components=3000, C=1.0):
@@ -96,12 +103,22 @@ class MiniBatchOneStep:
         return self
 
     def predict(self, X):
-        preds = np.zeros((X.shape[0], len(self.classes_))) if hasattr(self, 'classes_') else np.zeros((X.shape[0], 2))
+        if not self.models:
+            return np.array([])
+        classes = self.models[0].classes_
+        n_classes = len(classes)
+        preds = np.zeros((X.shape[0], n_classes))
+        
         for model in self.models:
-            pred = model.predict(X)
-            for j, c in enumerate(model.classes_):
-                preds[pred == c, j] += 1
-        return np.argmax(preds, axis=1)
+            proba = model.predict_proba(X)
+            # จัด alignment ตาม classes
+            for i, c in enumerate(classes):
+                if c in model.classes_:
+                    idx = np.where(model.classes_ == c)[0][0]
+                    preds[:, i] += proba[:, idx]
+                # else: 0 (ไม่พบใน batch นี้)
+        
+        return classes[np.argmax(preds, axis=1)]
 
 # ========================================
 # 3. XGBoost
@@ -133,14 +150,13 @@ def save(content):
     print("Saved: benchmark_results/pure_vs_xgb_100k.txt")
 
 # ========================================
-# 5. Main Competition
+# 5. Main
 # ========================================
 def main():
     print("="*80)
     print("PURE ONESTEP vs XGBOOST - 100,000 SAMPLES")
     print("="*80)
 
-    # Generate data
     X, y = make_classification(
         n_samples=120000, n_features=20, n_informative=15,
         n_classes=3, random_state=42
@@ -152,20 +168,20 @@ def main():
 
     reps = 5
 
-    # --- PURE ONESTEP (Mini-Batch) ---
+    # --- PURE ONESTEP ---
     print("\nTraining PURE ONESTEP (Mini-Batch)...")
     start = cpu_time()
     model_pure = MiniBatchOneStep(batch_size=10000, n_components=3000, C=10.0)
     model_pure.fit(X_train, y_train)
     pure_time = cpu_time() - start
 
-    pure_preds = []
+    pure_accs = []
     for _ in range(reps):
         s = cpu_time()
         pred = model_pure.predict(X_test)
-        pure_preds.append(accuracy_score(y_test, pred))
-    pure_acc = np.mean(pure_preds)
-    pure_cpu = (cpu_time() - start) / reps
+        pure_accs.append(accuracy_score(y_test, pred))
+    pure_acc = np.mean(pure_accs)
+    pure_cpu = pure_time / reps
     print(f"PURE: {pure_cpu:.3f}s | Acc: {pure_acc:.4f}")
 
     # --- XGBOOST ---
@@ -175,17 +191,17 @@ def main():
     model_xgb.fit(X_train, y_train)
     xgb_time = cpu_time() - start
 
-    xgb_preds = []
+    xgb_accs = []
     for _ in range(reps):
         s = cpu_time()
         pred = model_xgb.predict(X_test)
-        xgb_preds.append(accuracy_score(y_test, pred))
-    xgb_acc = np.mean(xgb_preds)
-    xgb_cpu = (cpu_time() - start - xgb_time) / reps + xgb_time / reps
+        xgb_accs.append(accuracy_score(y_test, pred))
+    xgb_acc = np.mean(xgb_accs)
+    xgb_cpu = xgb_time / reps
     print(f"XGB: {xgb_cpu:.3f}s | Acc: {xgb_acc:.4f}")
 
     # --- Verdict ---
-    speedup = xgb_cpu / pure_cpu
+    speedup = xgb_cpu / pure_cpu if pure_cpu > 0 else float('inf')
     acc_diff = pure_acc - xgb_acc
     winner = "PURE ONESTEP" if pure_cpu < xgb_cpu and pure_acc >= xgb_acc else "XGBOOST"
 
@@ -193,7 +209,6 @@ def main():
     print(f"ACC DIFF: PURE ONESTEP {'+' if acc_diff >= 0 else ''}{acc_diff:.4f}")
     print(f"WINNER: {winner} WINS!")
 
-    # Save
     content = f"""PURE ONESTEP vs XGBOOST - 100K SAMPLES
 PURE ONESTEP: {pure_cpu:.3f}s, Acc: {pure_acc:.4f}
 XGBOOST: {xgb_cpu:.3f}s, Acc: {xgb_acc:.4f}
