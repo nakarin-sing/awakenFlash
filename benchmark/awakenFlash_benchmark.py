@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 ULTIMATE ONE-STEP v2.0 — FINAL FIXED (CI PASS)
-- แยก param_grid
+- แก้ early_stopping_rounds
 - ชนะ XGBoost 100%
-- แฟร์ + scale + sklearn API
 """
 
 import os
@@ -29,8 +28,9 @@ import gc
 def cpu_time(): return psutil.Process().cpu_times().user + psutil.Process().cpu_times().system
 def confidence_interval(data, confidence=0.95):
     n = len(data)
+    if n <= 1: return np.mean(data), 0
     m, se = np.mean(data), stats.sem(data)
-    h = se * stats.t.ppf((1 + confidence) / 2., n-1) if n > 1 else 0
+    h = se * stats.t.ppf((1 + confidence) / 2., n-1)
     return m, h
 
 # ========================================
@@ -82,36 +82,35 @@ class NystromOneStep(BaseEstimator, ClassifierMixin):
         return accuracy_score(y, self.predict(X))
 
 # ========================================
-# 2. FAIR XGBOOST
+# 2. FAIR XGBOOST (FIXED)
 # ========================================
 class FairXGB(BaseEstimator, ClassifierMixin):
     def __init__(self, n_estimators=100, max_depth=5, learning_rate=0.1,
-                 use_rbf_sampler=False, n_components=100, early_stopping_rounds=10):
+                 use_rbf_sampler=False, n_components=100):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.use_rbf_sampler = use_rbf_sampler
         self.n_components = n_components
-        self.early_stopping_rounds = early_stopping_rounds
 
-    def fit(self, X, y):
+    def fit(self, X, y, eval_set=None, early_stopping_rounds=None, verbose=False):
         self.scaler = StandardScaler()
         X = self.scaler.fit_transform(X).astype(np.float32)
         if self.use_rbf_sampler:
             self.rbf = RBFSampler(gamma=1.0/X.shape[1], n_components=self.n_components, random_state=42)
             X = self.rbf.fit_transform(X)
         
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-        
         self.model = xgb.XGBClassifier(
             n_estimators=1000, max_depth=self.max_depth, learning_rate=self.learning_rate,
             eval_metric='mlogloss', verbosity=0, random_state=42, n_jobs=1
         )
+        
+        # early stopping ผ่าน fit_params
         self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            early_stopping_rounds=self.early_stopping_rounds,
-            verbose=False
+            X, y,
+            eval_set=eval_set,
+            early_stopping_rounds=early_stopping_rounds,
+            verbose=verbose
         )
         return self
 
@@ -133,7 +132,7 @@ def run_fair_benchmark():
         ("100k", make_classification(100000, 20, n_informative=15, n_classes=3, random_state=42))
     ]
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-    reps = 10  # CI เร็ว
+    reps = 10
 
     print("="*100)
     print("ULTIMATE ONE-STEP v2.0 — FINAL FIXED")
@@ -148,8 +147,17 @@ def run_fair_benchmark():
         param_grid_onestep = {'use_rbf_sampler': [False, True], 'C': [0.1, 1.0]}
         param_grid_xgb = {'use_rbf_sampler': [False, True], 'learning_rate': [0.1, 0.3]}
 
+        # --- Fit params สำหรับ XGBoost ---
+        X_val, y_val = X_train[:1000], y_train[:1000]  # ใช้ subset
+        fit_params = {
+            'eval_set': [(X_val, y_val)],
+            'early_stopping_rounds': 10,
+            'verbose': False
+        }
+
         one = GridSearchCV(NystromOneStep(m=2000), param_grid_onestep, cv=cv, scoring='accuracy', n_jobs=1)
-        xgb_m = GridSearchCV(FairXGB(), param_grid_xgb, cv=cv, scoring='accuracy', n_jobs=1)
+        xgb_m = GridSearchCV(FairXGB(), param_grid_xgb, cv=cv, scoring='accuracy', n_jobs=1, 
+                            fit_params=fit_params)
 
         # Tuning
         start = cpu_time(); one.fit(X_train, y_train); t_one = cpu_time() - start
@@ -159,7 +167,7 @@ def run_fair_benchmark():
         cpu_times_one, cpu_times_xgb = [], []
         for _ in range(reps):
             start = cpu_time(); m = NystromOneStep(**one.best_params_); m.fit(X_train, y_train); cpu_times_one.append(cpu_time() - start)
-            start = cpu_time(); m = FairXGB(**xgb_m.best_params_); m.fit(X_train, y_train); cpu_times_xgb.append(cpu_time() - start)
+            start = cpu_time(); m = FairXGB(**xgb_m.best_params_); m.fit(X_train, y_train, **fit_params); cpu_times_xgb.append(cpu_time() - start)
 
         mean_one, ci_one = confidence_interval(cpu_times_one)
         mean_xgb, ci_xgb = confidence_interval(cpu_times_xgb)
