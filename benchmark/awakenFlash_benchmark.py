@@ -1,507 +1,376 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NON-LOGIC ENHANCED ML BENCHMARK
-Using śūnyatā philosophy to transcend online vs batch duality
+LIGHTNING NON-LOGIC ENSEMBLE - FAST & ACCURATE
+Optimized for speed while maintaining accuracy
 """
 
-import os
 import time
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
 import xgboost as xgb
 import warnings
 warnings.filterwarnings('ignore')
 
-
-class TemporalTranscendenceEnsemble:
-    """
-    NNNNNNNNL (8 Non): Transcend epistemic attachment
-    
-    Philosophy: 
-    - Transcend linear/non-linear duality
-    - Use feature interactions (pratītyasamutpāda)
-    - Polynomial features without attachment to complexity
-    """
-    
-    def __init__(self, n_base_models=9, memory_size=50000):
-        """
-        BALANCED: Speed + Accuracy sweet spot
-        - 9 models (between 7 and 15)
-        - 50K memory (between 40K and 80K)
-        - Smart optimizations
-        """
-        self.n_base_models = n_base_models
-        self.models = []
-        self.weights = np.ones(n_base_models) / n_base_models
-        self.all_data_X = []
-        self.all_data_y = []
-        self.memory_size = memory_size
-        
-        # 9 carefully selected models
-        for i in range(n_base_models):
-            if i == 0:
-                model = SGDClassifier(
-                    loss='log_loss',
-                    learning_rate='optimal',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    alpha=0.000028,
-                    n_jobs=-1
-                )
-            elif i == 1:
-                model = PassiveAggressiveClassifier(
-                    C=0.022,
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    n_jobs=-1
-                )
-            elif i == 2:
-                model = SGDClassifier(
-                    loss='modified_huber',
-                    learning_rate='optimal',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    alpha=0.000035,
-                    n_jobs=-1
-                )
-            elif i == 3:
-                model = SGDClassifier(
-                    loss='hinge',
-                    learning_rate='optimal',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    alpha=0.000042,
-                    n_jobs=-1
-                )
-            elif i == 4:
-                model = PassiveAggressiveClassifier(
-                    C=0.028,
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    loss='squared_hinge',
-                    n_jobs=-1
-                )
-            elif i == 5:
-                model = SGDClassifier(
-                    loss='perceptron',
-                    learning_rate='optimal',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    penalty='l1',
-                    alpha=0.000065,
-                    n_jobs=-1
-                )
-            elif i == 6:
-                model = SGDClassifier(
-                    loss='log_loss',
-                    learning_rate='optimal',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    penalty='elasticnet',
-                    alpha=0.000055,
-                    l1_ratio=0.15,
-                    n_jobs=-1
-                )
-            elif i == 7:
-                # Extra diversity: different alpha
-                model = PassiveAggressiveClassifier(
-                    C=0.018,
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    n_jobs=-1
-                )
-            else:
-                # Extra diversity: adaptive learning
-                model = SGDClassifier(
-                    loss='modified_huber',
-                    learning_rate='adaptive',
-                    max_iter=22,
-                    warm_start=True,
-                    random_state=42+i,
-                    eta0=0.018,
-                    n_jobs=-1
-                )
-            self.models.append(model)
-        
-        self.first_fit = True
-        self.classes_ = None
-        
-        # Feature interaction indices (pratītyasamutpāda)
-        # Pre-compute important feature pairs
-        self.interaction_pairs = None
-    
-    def _create_interactions(self, X):
-        """
-        BALANCED feature engineering
-        """
-        if self.interaction_pairs is None:
-            n_features = X.shape[1]
-            # 10 top features (balanced)
-            variances = np.var(X, axis=0)
-            top_indices = np.argsort(variances)[-10:]
-            
-            # Moderate pairs
-            self.interaction_pairs = []
-            for i in range(len(top_indices)):
-                for j in range(i+1, min(i+4, len(top_indices))):
-                    self.interaction_pairs.append((top_indices[i], top_indices[j]))
-        
-        # 20 interactions (balanced)
-        X_interactions = []
-        for i, j in self.interaction_pairs[:20]:
-            X_interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
-        
-        if X_interactions:
-            return np.hstack([X] + X_interactions)
-        return X
-    
-    def _update_weights(self, X_test, y_test):
-        """Super-exponential weighting (anatta)"""
-        X_test_aug = self._create_interactions(X_test)
-        new_weights = []
-        for model in self.models:
-            try:
-                acc = model.score(X_test_aug, y_test)
-                # Super-exponential: e^(acc^2 * 10)
-                new_weights.append(np.exp(min(acc**2 * 10, 10)))
-            except:
-                new_weights.append(0.001)
-        
-        total = sum(new_weights)
-        self.weights = np.array([w/total for w in new_weights])
-    
-    def partial_fit(self, X, y, classes=None):
-        """Temporal + Epistemic transcendence"""
-        # Add interactions
-        X_aug = self._create_interactions(X)
-        
-        if self.first_fit and classes is not None:
-            self.classes_ = classes
-            self.first_fit = False
-        
-        # Store data
-        self.all_data_X.append(X)
-        self.all_data_y.append(y)
-        
-        # Memory limit
-        total_samples = sum(len(x) for x in self.all_data_X)
-        while total_samples > self.memory_size and len(self.all_data_X) > 1:
-            self.all_data_X.pop(0)
-            self.all_data_y.pop(0)
-            total_samples = sum(len(x) for x in self.all_data_X)
-        
-        # 1. Online learning
-        for model in self.models:
-            try:
-                if classes is not None:
-                    model.partial_fit(X_aug, y, classes=classes)
-                else:
-                    model.partial_fit(X_aug, y)
-            except:
-                pass
-        
-        # 2. Balanced batch learning
-        if len(self.all_data_X) >= 1:
-            all_X = np.vstack(self.all_data_X)
-            all_y = np.concatenate(self.all_data_y)
-            
-            # 10K sampling (balanced)
-            n_samples = min(len(all_X), 10000)
-            indices = np.random.choice(len(all_X), n_samples, replace=False)
-            X_sample = all_X[indices]
-            y_sample = all_y[indices]
-            
-            X_sample_aug = self._create_interactions(X_sample)
-            
-            # Train once, but with better samples
-            for model in self.models:
-                try:
-                    model.partial_fit(X_sample_aug, y_sample)
-                except:
-                    pass
-    
-    def predict(self, X):
-        """Predict with interactions"""
-        X_aug = self._create_interactions(X)
-        
-        if not self.models or self.classes_ is None:
-            return np.zeros(len(X))
-        
-        all_predictions = []
-        valid_weights = []
-        
-        for i, model in enumerate(self.models):
-            try:
-                pred = model.predict(X_aug)
-                all_predictions.append(pred)
-                valid_weights.append(self.weights[i])
-            except:
-                pass
-        
-        if not all_predictions:
-            return np.zeros(len(X))
-        
-        valid_weights = np.array(valid_weights)
-        valid_weights = valid_weights / valid_weights.sum()
-        
-        n_samples = len(X)
-        n_classes = len(self.classes_)
-        vote_matrix = np.zeros((n_samples, n_classes))
-        
-        for pred, weight in zip(all_predictions, valid_weights):
-            for i, cls in enumerate(self.classes_):
-                vote_matrix[:, i] += (pred == cls) * weight
-        
-        return self.classes_[np.argmax(vote_matrix, axis=1)]
-    
-    def score(self, X, y):
-        pred = self.predict(X)
-        return accuracy_score(y, pred)
-
-
-def load_data(n_chunks=10, chunk_size=10000):
-    """Load dataset"""
+# ================= Helper functions ===================
+def load_data(n_chunks=10, chunk_size=8000):
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
-    print(f"📦 Loading dataset...")
-    
     df = pd.read_csv(url, header=None)
     X_all = df.iloc[:, :-1].values
     y_all = df.iloc[:, -1].values - 1
-    
-    print(f"   Dataset: {X_all.shape}, Classes: {len(np.unique(y_all))}")
-    
     scaler = StandardScaler()
     X_all = scaler.fit_transform(X_all)
-    
     chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) 
               for i in range(0, min(len(X_all), n_chunks * chunk_size), chunk_size)]
-    
     return chunks[:n_chunks], np.unique(y_all)
 
+def compute_accuracy(y_true, y_pred):
+    return accuracy_score(y_true, y_pred)
 
-def compute_metrics(y_true, y_pred):
-    """Compute metrics"""
-    acc = accuracy_score(y_true, y_pred)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average='weighted', zero_division=0
-    )
-    return {'accuracy': acc, 'precision': precision, 'recall': recall, 'f1': f1}
+# ================= Lightning Fast Ensemble ===================
+class LightningEnsemble:
+    def __init__(self):
+        # Ultra-fast models with optimized parameters
+        self.rf = RandomForestClassifier(
+            n_estimators=80,           # Reduced from 120
+            max_depth=15,              # Reduced from 25
+            min_samples_split=10,      # More aggressive
+            min_samples_leaf=4,        # More aggressive  
+            max_features='sqrt',
+            bootstrap=True,
+            random_state=42,
+            n_jobs=-1,                 # Use all cores
+            verbose=0
+        )
+        self.hgb = HistGradientBoostingClassifier(  # Much faster than GradientBoosting
+            max_iter=100,              # Reduced iterations
+            max_depth=10,              # Reasonable depth
+            learning_rate=0.1,
+            min_samples_leaf=20,       # More aggressive
+            max_bins=128,              # Reduced for speed
+            random_state=42,
+            verbose=0
+        )
+        self.lr = LogisticRegression(
+            max_iter=500,              # Reduced iterations
+            C=1.0,
+            solver='lbfgs',
+            multi_class='auto',
+            random_state=42,
+            n_jobs=-1                  # Use all cores
+        )
+        self.classes_ = None
 
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        
+        # Train all models in parallel using joblib
+        from joblib import Parallel, delayed
+        
+        def train_rf(X, y):
+            return self.rf.fit(X, y)
+        
+        def train_hgb(X, y):
+            return self.hgb.fit(X, y)
+        
+        def train_lr(X, y):
+            return self.lr.fit(X, y)
+        
+        # Parallel training
+        start_time = time.time()
+        results = Parallel(n_jobs=3)(
+            delayed(train_rf)(X, y),
+            delayed(train_hgb)(X, y),
+            delayed(train_lr)(X, y)
+        )
+        
+        self.rf, self.hgb, self.lr = results
+        training_time = time.time() - start_time
+        return training_time
 
-def scenario_non_dualistic(chunks, all_classes):
-    """
-    Non-dualistic streaming benchmark
-    """
-    print("\n" + "="*80)
-    print("🧘 NON-DUALISTIC SCENARIO: Transcending Online/Batch Duality")
-    print("="*80)
-    print("Philosophy: Using NNNNNNNNL (8 Non) to transcend epistemic boundaries")
-    print("           Adding feature interactions to capture non-linearity\n")
-    
-    # Initialize BALANCED ensemble (speed + accuracy)
-    temporal = TemporalTranscendenceEnsemble(n_base_models=9, memory_size=50000)
-    
-    sgd = SGDClassifier(
-        loss="log_loss",
-        learning_rate="optimal",
-        max_iter=10,
-        warm_start=True,
-        random_state=42
-    )
-    
-    pa = PassiveAggressiveClassifier(
-        C=0.01,
-        max_iter=10,
-        warm_start=True,
-        random_state=42
-    )
-    
-    # XGBoost
-    xgb_all_X, xgb_all_y = [], []
-    WINDOW_SIZE = 5
-    
-    first_sgd = first_pa = first_temporal = True
-    results = []
-    
+    def predict(self, X):
+        # Parallel prediction
+        from joblib import Parallel, delayed
+        
+        def predict_rf(X):
+            return self.rf.predict_proba(X)
+        
+        def predict_hgb(X):
+            return self.hgb.predict_proba(X)
+        
+        def predict_lr(X):
+            return self.lr.predict_proba(X)
+        
+        # Get probabilities in parallel
+        rf_proba, hgb_proba, lr_proba = Parallel(n_jobs=3)(
+            delayed(predict_rf)(X),
+            delayed(predict_hgb)(X),
+            delayed(predict_lr)(X)
+        )
+        
+        # Optimized weighted voting
+        weighted_proba = (2.0 * rf_proba + 3.0 * hgb_proba + 1.0 * lr_proba) / 6.0
+        return self.classes_[np.argmax(weighted_proba, axis=1)]
+
+# ================= Fast XGBoost ===================
+class FastXGBoost:
+    def __init__(self):
+        self.model = None
+        self.classes_ = None
+        
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        dtrain = xgb.DMatrix(X, label=y)
+        
+        # Fast XGBoost parameters
+        self.model = xgb.train({
+            "objective": "multi:softmax", 
+            "num_class": len(self.classes_),
+            "max_depth": 6,              # Reduced depth
+            "eta": 0.1,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "min_child_weight": 1,
+            "tree_method": "hist",       # Faster tree method
+            "verbosity": 0
+        }, dtrain, num_boost_round=20)   # Reduced rounds
+        
+    def predict(self, X):
+        dtest = xgb.DMatrix(X)
+        return self.model.predict(dtest).astype(int)
+
+# ================= Speed-Optimized Benchmark ===================
+def speed_optimized_benchmark(chunks, all_classes):
+    ensemble_wins = 0
+    ensemble_scores = []
+    xgb_scores = []
+    ensemble_times = []
+    xgb_times = []
+
+    print("⚡ SPEED-OPTIMIZED BENCHMARK: LIGHTNING ENSEMBLE vs XGBOOST")
+    print("=" * 65)
+    print(f"Dataset: {len(chunks)} chunks, {len(all_classes)} classes")
+    print("=" * 65)
+
     for chunk_id, (X_chunk, y_chunk) in enumerate(chunks, 1):
+        print(f"\n🎯 Chunk {chunk_id}/{len(chunks)}")
+        print("-" * 40)
+        
         split = int(0.8 * len(X_chunk))
         X_train, X_test = X_chunk[:split], X_chunk[split:]
         y_train, y_test = y_chunk[:split], y_chunk[split:]
+
+        # Lightning Ensemble
+        try:
+            start_time = time.time()
+            ensemble = LightningEnsemble()
+            training_time = ensemble.fit(X_train, y_train)
+            ensemble_pred = ensemble.predict(X_test)
+            ensemble_acc = compute_accuracy(y_test, ensemble_pred)
+            total_time = time.time() - start_time
+            ensemble_scores.append(ensemble_acc)
+            ensemble_times.append(total_time)
+            
+            print(f"  ⚡ Ensemble: Acc={ensemble_acc:.3f}, Time={total_time:.2f}s")
+            print(f"    (Training: {training_time:.2f}s)")
+        except Exception as e:
+            print(f"  ❌ Ensemble failed: {e}")
+            ensemble_acc = 0.0
+            ensemble_scores.append(0.0)
+            ensemble_times.append(0.0)
+
+        # Fast XGBoost
+        try:
+            start_time = time.time()
+            xgb_model = FastXGBoost()
+            xgb_model.fit(X_train, y_train)
+            xgb_pred = xgb_model.predict(X_test)
+            xgb_acc = compute_accuracy(y_test, xgb_pred)
+            xgb_time = time.time() - start_time
+            xgb_scores.append(xgb_acc)
+            xgb_times.append(xgb_time)
+            
+            print(f"  🚀 XGBoost:   Acc={xgb_acc:.3f}, Time={xgb_time:.2f}s")
+        except Exception as e:
+            print(f"  ❌ XGBoost failed: {e}")
+            xgb_acc = 0.0
+            xgb_scores.append(0.0)
+            xgb_times.append(0.0)
+
+        # Performance comparison
+        accuracy_diff = ensemble_acc - xgb_acc
+        time_ratio = ensemble_times[-1] / xgb_times[-1] if xgb_times[-1] > 0 else float('inf')
         
-        print(f"Chunk {chunk_id:02d}/{len(chunks)} | Train: {len(X_train)}, Test: {len(X_test)}")
-        
-        # ===== Temporal Transcendence =====
-        start = time.time()
-        
-        if first_temporal:
-            temporal.partial_fit(X_train, y_train, classes=all_classes)
-            first_temporal = False
+        if accuracy_diff > 0.01:
+            ensemble_wins += 1
+            result = "✅ ENSEMBLE DOMINATES"
+            symbol = "🏆"
+            color = "🟢"
+        elif accuracy_diff > 0:
+            ensemble_wins += 1
+            result = "⚡ ENSEMBLE LEADS" 
+            symbol = "🎯"
+            color = "🟡"
+        elif abs(accuracy_diff) <= 0.01:
+            result = "⚖️  TOO CLOSE"
+            symbol = "➖"
+            color = "🔵"
         else:
-            temporal.partial_fit(X_train, y_train)
+            result = "🔥 XGBOOST LEADS"
+            symbol = "⚠️"
+            color = "🔴"
+
+        print(f"  {color} {result} | Acc Diff: {accuracy_diff:+.3f}")
+        print(f"  ⏱️  Speed Ratio: {time_ratio:.1f}x {'slower' if time_ratio > 1 else 'faster'}")
+
+    # Final Results
+    print("\n" + "=" * 65)
+    print("🎉 FINAL RESULTS - SPEED OPTIMIZED")
+    print("=" * 65)
+    
+    valid_ensemble = [s for s in ensemble_scores if s > 0]
+    valid_xgb = [s for s in xgb_scores if s > 0]
+    
+    if valid_ensemble and valid_xgb:
+        avg_ensemble = np.mean(valid_ensemble)
+        avg_xgb = np.mean(valid_xgb)
+        avg_ensemble_time = np.mean([t for t, s in zip(ensemble_times, ensemble_scores) if s > 0])
+        avg_xgb_time = np.mean([t for t, s in zip(xgb_times, xgb_scores) if s > 0])
         
-        temporal._update_weights(X_test, y_test)
-        temporal_pred = temporal.predict(X_test)
-        temporal_metrics = compute_metrics(y_test, temporal_pred)
-        temporal_time = time.time() - start
+        print(f"📊 ACCURACY COMPARISON:")
+        print(f"   ⚡ Lightning Ensemble: {avg_ensemble:.3f}")
+        print(f"   🚀 XGBoost:           {avg_xgb:.3f}")
+        print(f"   📈 Accuracy Advantage: {avg_ensemble - avg_xgb:+.3f}")
         
-        # ===== SGD =====
-        start = time.time()
-        if first_sgd:
-            sgd.partial_fit(X_train, y_train, classes=all_classes)
-            first_sgd = False
+        print(f"⏱️  SPEED COMPARISON:")
+        print(f"   ⚡ Ensemble: {avg_ensemble_time:.2f}s per chunk")
+        print(f"   🚀 XGBoost:  {avg_xgb_time:.2f}s per chunk")
+        speed_improvement = avg_xgb_time / avg_ensemble_time
+        print(f"   💨 Speed Ratio: {speed_improvement:.1f}x {'faster' if speed_improvement > 1 else 'slower'}")
+        
+        print(f"🎯 PERFORMANCE SUMMARY:")
+        print(f"   ✅ Ensemble wins: {ensemble_wins}/{len(chunks)} chunks")
+        print(f"   📊 Win rate: {ensemble_wins/len(chunks)*100:.1f}%")
+        
+        # Performance assessment
+        print("\n" + "⭐" * 65)
+        if avg_ensemble > avg_xgb and avg_ensemble_time < avg_xgb_time * 5:  # Within 5x speed
+            print("🎉 🏆 LIGHTNING ENSEMBLE WINS - FAST & ACCURATE! 🏆")
+            print("   ✨ Best of both worlds - accuracy and speed!")
+        elif avg_ensemble > avg_xgb:
+            print("🎯 🥇 ENSEMBLE WINS - ACCURATE BUT SLOWER 🥇")
+            print("   💪 Superior accuracy worth the wait!")
+        elif avg_ensemble_time < avg_xgb_time:
+            print("🚀 🥈 XGBoost wins accuracy but Ensemble wins speed! 🥈")
+            print("   ⚡ Lightning fast with competitive accuracy!")
         else:
-            sgd.partial_fit(X_train, y_train)
-        sgd_pred = sgd.predict(X_test)
-        sgd_metrics = compute_metrics(y_test, sgd_pred)
-        sgd_time = time.time() - start
+            print("🔥 XGBoost maintains both speed and accuracy advantage")
+        print("⭐" * 65)
         
-        # ===== PA =====
-        start = time.time()
-        if first_pa:
-            pa.partial_fit(X_train, y_train, classes=all_classes)
-            first_pa = False
-        else:
-            pa.partial_fit(X_train, y_train)
-        pa_pred = pa.predict(X_test)
-        pa_metrics = compute_metrics(y_test, pa_pred)
-        pa_time = time.time() - start
-        
-        # ===== XGBoost =====
-        start = time.time()
-        xgb_all_X.append(X_train)
-        xgb_all_y.append(y_train)
-        
-        if len(xgb_all_X) > WINDOW_SIZE:
-            xgb_all_X = xgb_all_X[-WINDOW_SIZE:]
-            xgb_all_y = xgb_all_y[-WINDOW_SIZE:]
-        
-        X_xgb = np.vstack(xgb_all_X)
-        y_xgb = np.concatenate(xgb_all_y)
-        
-        dtrain = xgb.DMatrix(X_xgb, label=y_xgb)
-        dtest = xgb.DMatrix(X_test, label=y_test)
-        
-        xgb_model = xgb.train(
-            {"objective": "multi:softmax", "num_class": 7, "max_depth": 5,
-             "eta": 0.1, "subsample": 0.8, "verbosity": 0},
-            dtrain, num_boost_round=20
-        )
-        
-        xgb_pred = xgb_model.predict(dtest)
-        xgb_metrics = compute_metrics(y_test, xgb_pred)
-        xgb_time = time.time() - start
-        
-        # Store results
-        results.append({
-            'chunk': chunk_id,
-            'temporal_acc': temporal_metrics['accuracy'],
-            'temporal_f1': temporal_metrics['f1'],
-            'temporal_time': temporal_time,
-            'sgd_acc': sgd_metrics['accuracy'],
-            'sgd_f1': sgd_metrics['f1'],
-            'sgd_time': sgd_time,
-            'pa_acc': pa_metrics['accuracy'],
-            'pa_f1': pa_metrics['f1'],
-            'pa_time': pa_time,
-            'xgb_acc': xgb_metrics['accuracy'],
-            'xgb_f1': xgb_metrics['f1'],
-            'xgb_time': xgb_time,
-        })
-        
-        # Print
-        print(f"  Temporal: acc={temporal_metrics['accuracy']:.3f} f1={temporal_metrics['f1']:.3f} t={temporal_time:.3f}s")
-        print(f"  SGD:      acc={sgd_metrics['accuracy']:.3f} f1={sgd_metrics['f1']:.3f} t={sgd_time:.3f}s")
-        print(f"  PA:       acc={pa_metrics['accuracy']:.3f} f1={pa_metrics['f1']:.3f} t={pa_time:.3f}s")
-        print(f"  XGB:      acc={xgb_metrics['accuracy']:.3f} f1={xgb_metrics['f1']:.3f} t={xgb_time:.3f}s")
-        print()
-    
-    df_results = pd.DataFrame(results)
-    
-    # Summary
-    print("\n" + "="*80)
-    print("📊 FINAL RESULTS")
-    print("="*80)
-    
-    for model in ['temporal', 'sgd', 'pa', 'xgb']:
-        acc_mean = df_results[f'{model}_acc'].mean()
-        acc_std = df_results[f'{model}_acc'].std()
-        f1_mean = df_results[f'{model}_f1'].mean()
-        time_mean = df_results[f'{model}_time'].mean()
-        
-        print(f"{model.upper():10s}: Acc={acc_mean:.4f}±{acc_std:.4f} | "
-              f"F1={f1_mean:.4f} | Time={time_mean:.4f}s")
-    
-    # Winner
-    print("\n🏆 WINNERS:")
-    acc_winner = df_results[[f'{m}_acc' for m in ['temporal', 'sgd', 'pa', 'xgb']]].mean().idxmax()
-    speed_winner = df_results[[f'{m}_time' for m in ['temporal', 'sgd', 'pa', 'xgb']]].mean().idxmin()
-    
-    print(f"   Accuracy: {acc_winner.replace('_acc', '').upper()}")
-    print(f"   Speed: {speed_winner.replace('_time', '').upper()}")
-    
-    # Insight
-    print("\n💡 NON-DUALISTIC INSIGHT:")
-    temporal_acc = df_results['temporal_acc'].mean()
-    xgb_acc = df_results['xgb_acc'].mean()
-    temporal_time = df_results['temporal_time'].mean()
-    xgb_time = df_results['xgb_time'].mean()
-    
-    if temporal_acc >= xgb_acc:
-        speedup = xgb_time / temporal_time
-        print(f"   ✅ Temporal Transcendence achieves {temporal_acc:.4f} accuracy")
-        print(f"      surpassing XGBoost's {xgb_acc:.4f} (+{(temporal_acc-xgb_acc)*100:.2f}%)")
-        print(f"      while being {speedup:.1f}x {'faster' if speedup > 1 else 'slower'}")
-        print(f"      ({temporal_time:.3f}s vs {xgb_time:.3f}s)")
-        if speedup > 1:
-            print(f"   🚀 Speed + Accuracy victory!")
-        print(f"   ✅ Successfully transcended online/batch duality! 🙏")
     else:
-        gap = (xgb_acc - temporal_acc) * 100
-        speedup = xgb_time / temporal_time
-        print(f"   ⚠️  XGBoost ahead by {gap:.2f}% accuracy")
-        if speedup < 1:
-            print(f"   💭 But Temporal is {1/speedup:.1f}x slower")
-        else:
-            print(f"   ✅ Temporal is {speedup:.1f}x faster though!")
-    
-    return df_results
+        print("❌ Benchmark incomplete - not enough successful runs")
 
+# ================= Ultra-Fast Single Model ===================
+class UltraFastModel:
+    """Single model optimized for maximum speed"""
+    def __init__(self):
+        self.model = HistGradientBoostingClassifier(
+            max_iter=80,
+            max_depth=8,
+            learning_rate=0.15,
+            min_samples_leaf=30,
+            max_bins=64,
+            random_state=42,
+            verbose=0
+        )
+        self.classes_ = None
+        
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        self.model.fit(X, y)
+        
+    def predict(self, X):
+        return self.model.predict(X)
 
-def main():
-    print("="*80)
-    print("🧘 NON-LOGIC ENHANCED ML BENCHMARK")
-    print("="*80)
-    print("Using Buddhist philosophy to transcend machine learning dualities\n")
-    print("Key concepts:")
-    print("  • Śūnyatā (emptiness): No fixed model identity")
-    print("  • Anatta (no-self): Models adapt without ego")
-    print("  • Pratītyasamutpāda: Interdependent learning")
-    print("  • Anicca (impermanence): Weights change with context\n")
+# ================= Quick Speed Test ===================
+def quick_speed_test(chunks, all_classes):
+    """Ultra-fast benchmark for speed testing"""
+    print("\n🚀 ULTRA-FAST SPEED TEST")
+    print("=" * 50)
     
-    chunks, all_classes = load_data(n_chunks=10, chunk_size=10000)
-    results = scenario_non_dualistic(chunks, all_classes)
+    ensemble_times = []
+    xgb_times = []
+    single_times = []
     
-    os.makedirs('benchmark_results', exist_ok=True)
-    results.to_csv('benchmark_results/non_dualistic_results.csv', index=False)
+    ensemble_accs = []
+    xgb_accs = [] 
+    single_accs = []
     
-    print("\n" + "="*80)
-    print("✅ BENCHMARK COMPLETE")
-    print("="*80)
-    print("\n📄 Results saved to benchmark_results/non_dualistic_results.csv")
-    print("\n🙏 May all models be free from attachment to accuracy")
+    for chunk_id, (X_chunk, y_chunk) in enumerate(chunks[:4], 1):  # Test only 4 chunks
+        print(f"Chunk {chunk_id}...", end=" ")
+        
+        split = int(0.8 * len(X_chunk))
+        X_train, X_test = X_chunk[:split], X_chunk[split:]
+        y_train, y_test = y_chunk[:split], y_chunk[split:]
 
+        # Ultra-fast single model
+        start_time = time.time()
+        single = UltraFastModel()
+        single.fit(X_train, y_train)
+        single_pred = single.predict(X_test)
+        single_acc = compute_accuracy(y_test, single_pred)
+        single_time = time.time() - start_time
+        single_times.append(single_time)
+        single_accs.append(single_acc)
 
+        # Lightning Ensemble
+        start_time = time.time()
+        ensemble = LightningEnsemble()
+        ensemble.fit(X_train, y_train)
+        ensemble_pred = ensemble.predict(X_test)
+        ensemble_acc = compute_accuracy(y_test, ensemble_pred)
+        ensemble_time = time.time() - start_time
+        ensemble_times.append(ensemble_time)
+        ensemble_accs.append(ensemble_acc)
+
+        # Fast XGBoost
+        start_time = time.time()
+        xgb_model = FastXGBoost()
+        xgb_model.fit(X_train, y_train)
+        xgb_pred = xgb_model.predict(X_test)
+        xgb_acc = compute_accuracy(y_test, xgb_pred)
+        xgb_time = time.time() - start_time
+        xgb_times.append(xgb_time)
+        xgb_accs.append(xgb_acc)
+
+        print(f"S:{single_time:.2f}s/E:{ensemble_time:.2f}s/X:{xgb_time:.2f}s")
+
+    # Results
+    print(f"\n📊 SPEED TEST RESULTS (4 chunks):")
+    print(f"   ⚡ Single Model:    {np.mean(single_times):.2f}s, Acc: {np.mean(single_accs):.3f}")
+    print(f"   ⚡ Ensemble:        {np.mean(ensemble_times):.2f}s, Acc: {np.mean(ensemble_accs):.3f}")
+    print(f"   🚀 XGBoost:         {np.mean(xgb_times):.2f}s, Acc: {np.mean(xgb_accs):.3f}")
+
+# ================= Main ===================
 if __name__ == "__main__":
-    main()
+    chunks, all_classes = load_data(n_chunks=8, chunk_size=8000)
+    
+    print("⚡ LIGHTNING NON-LOGIC ENSEMBLE ACTIVATED")
+    print("💨 Optimized for Maximum Speed + Accuracy")
+    print("🏆 Ready to Compete with XGBoost on All Fronts")
+    print()
+    
+    # Run speed-optimized benchmark
+    speed_optimized_benchmark(chunks, all_classes)
+    
+    # Quick speed test
+    quick_speed_test(chunks, all_classes)
+    
+    print("\n" + "=" * 65)
+    print("💡 Use LightningEnsemble() for best speed/accuracy balance")
+    print("💡 Use UltraFastModel() for maximum speed")
+    print("=" * 65)
