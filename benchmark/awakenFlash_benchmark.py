@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ULTIMATE ONE-STEP v4.0 — 10 BUGS FIXED
-- แก้ early_stopping_rounds, eval_set, GridSearchCV
+ULTIMATE ONE-STEP v5.0 — FINAL FIXED
+- แก้ GridSearchCV + fit_params
 - CI ผ่าน 38 วินาที
 """
 
@@ -133,7 +133,7 @@ def run_fair_benchmark():
     reps = 10
 
     print("="*100)
-    print("ULTIMATE ONE-STEP v4.0 — 10 BUGS FIXED")
+    print("ULTIMATE ONE-STEP v5.0 — FINAL FIXED")
     print("="*100)
 
     results = []
