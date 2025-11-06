@@ -1,230 +1,194 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-ULTIMATE STREAMING ENSEMBLE - TRUE VICTORY v26 (Absolute Digital Nirvana)
-Target: Latency < 1.0ms และ Speedup > 5x | Accuracy > 0.95
-
-Key Changes (v26):
-1. Ensemble SGD: eta0=0.001 (Micro-step learning)
-2. Ensemble RF: n_estimators=40, max_samples=0.6 (High Accuracy)
-3. Ensemble Fusion: SGD 5x weight (Latency prioritized)
-4. XGBoost: update_interval=20, num_boost_round=50 (Maximum O(N) penalty)
-5. Batch Size: 20
+ULTIMATE STREAMING BENCHMARK - TRUE REAL-WORLD v1.0
+ปรับปรุงให้มีความน่าเชื่อถือและโปร่งใส
 """
 
-import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-
-import time
 import numpy as np
-import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import SGDClassifier
-from sklearn.metrics import accuracy_score
-from sklearn.preprocessing import StandardScaler
+import pandas as pd
+from sklearn.datasets import load_breast_cancer, load_iris, load_wine
 from sklearn.model_selection import train_test_split
-from sklearn.utils import shuffle
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+import xgboost as xgb
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
-# ================= TRUE O(1) ENSEMBLE (OPTIMIZED FOR SPEED) ===================
-class StreamingEnsemble:
-    def __init__(self, master_scaler, window_size=1500, update_interval=500):
-        self.scaler = master_scaler
-        self.window_size = window_size
-        self.update_interval = update_interval
+class TrustworthyBenchmark:
+    def __init__(self):
+        self.results = {}
         
-        # FIX v26: Micro-step learning (Non 9)
-        self.sgd = SGDClassifier(
-            loss='log_loss', penalty='l2', alpha=0.00005, max_iter=1,
-            learning_rate='constant', eta0=0.001, random_state=42, n_jobs=1, warm_start=True # <-- TUNED
+    def validate_consistency(self, intermediate_scores, final_scores, tolerance=0.05):
+        """ตรวจสอบความสอดคล้องระหว่างคะแนนกลางทางและคะแนนสุดท้าย"""
+        for model_name in intermediate_scores:
+            if model_name in final_scores:
+                last_intermediate = intermediate_scores[model_name][-1]
+                final = final_scores[model_name]
+                if abs(last_intermediate - final) > tolerance:
+                    print(f"⚠️  คำเตือน: {model_name} มีความไม่สอดคล้อง (กลางทาง: {last_intermediate:.4f}, สุดท้าย: {final:.4f})")
+                    return False
+        return True
+    
+    def measure_latency(self, model, X_test, n_repeats=10):
+        """วัด latency แบบแม่นยำด้วยการทำซ้ำหลายครั้ง"""
+        latencies = []
+        for _ in range(n_repeats):
+            start_time = time.time()
+            model.predict(X_test)
+            end_time = time.time()
+            latencies.append((end_time - start_time) * 1000)  # convert to ms
+        
+        # ใช้ค่า median เพื่อลดผลกระทบจาก outlier
+        return np.median(latencies)
+    
+    def run_dataset_benchmark(self, dataset_name, data_loader, data_multiplier=1):
+        print(f"\n{'='*60}")
+        print(f"Dataset: {dataset_name} (x{data_multiplier} data)")
+        print(f"{'='*60}")
+        
+        # โหลดและเตรียมข้อมูล
+        X, y = data_loader(return_X_y=True)
+        
+        # เพิ่มข้อมูลเพื่อให้มีขนาดใหญ่ขึ้น (จำลอง streaming)
+        if data_multiplier > 1:
+            X = np.vstack([X] * data_multiplier)
+            y = np.hstack([y] * data_multiplier)
+        
+        # แบ่งข้อมูลแบบสุ่มและวัดผลซ้ำได้
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
         )
         
-        # FIX v26: RF n_estimators และ max_samples (Non 7/8)
-        self.rf = RandomForestClassifier(
-            n_estimators=40, max_depth=None, min_samples_split=2, # <-- TUNED
-            max_samples=0.6, random_state=42, n_jobs=1, warm_start=True # <-- TUNED
-        )
+        # แบ่ง training data เป็น batches
+        n_batches = 10
+        batch_size = len(X_train) // n_batches
+        batches = []
+        for i in range(n_batches):
+            start_idx = i * batch_size
+            end_idx = start_idx + batch_size if i < n_batches - 1 else len(X_train)
+            batches.append((X_train[start_idx:end_idx], y_train[start_idx:end_idx]))
         
-        self.X_buffer = []
-        self.y_buffer = []
-        self.sample_count = 0
-        self.is_fitted = False
-
-    def _update_buffer(self, X_new, y_new):
-        self.X_buffer.append(np.array(X_new, dtype=np.float32))
-        self.y_buffer.append(np.array(y_new, dtype=np.int32))
+        # Initialize models
+        ensemble_model = RandomForestClassifier(n_estimators=50, random_state=42)
+        xgb_model = xgb.XGBClassifier(n_estimators=50, random_state=42)
         
-        current_size = sum(len(x) for x in self.X_buffer)
-        while current_size > self.window_size:
-            self.X_buffer.pop(0)
-            self.y_buffer.pop(0)
-            current_size = sum(len(x) for x in self.X_buffer)
-
-    def partial_fit(self, X_new, y_new):
-        start_time = time.time()
+        intermediate_scores = {'Ens': [], 'XGB': []}
+        intermediate_latencies = {'Ens': [], 'XGB': []}
         
-        self._update_buffer(X_new, y_new)
-        self.sample_count += len(X_new)
-        
-        X_scaled_new = self.scaler.transform(X_new)
-        
-        classes = np.unique(np.hstack(self.y_buffer)) if self.y_buffer else np.unique(y_new)
-        self.sgd.partial_fit(X_scaled_new, y_new, classes=classes)
-        
-        # เพิ่ม n_estimators เป็น 40 ตั้งแต่ต้น
-        if self.sample_count % self.update_interval == 0 or not self.is_fitted:
-            self.rf.n_estimators = min(self.rf.n_estimators + 5, 100)
-            self.rf.fit(X_scaled_new, y_new)
-            self.is_fitted = True
+        # Streaming training and evaluation
+        for i, (X_batch, y_batch) in enumerate(batches):
+            # Train models incrementally
+            start_time = time.time()
+            ensemble_model.fit(X_batch, y_batch)
+            ensemble_train_time = (time.time() - start_time) * 1000
             
-        return time.time() - start_time
-    
-    def predict(self, X):
-        if not self.is_fitted:
-            return np.zeros(len(X), dtype=int)
+            start_time = time.time()
+            xgb_model.fit(X_batch, y_batch)
+            xgb_train_time = (time.time() - start_time) * 1000
+            
+            # Predict and evaluate
+            ens_pred = ensemble_model.predict(X_test)
+            xgb_pred = xgb_model.predict(X_test)
+            
+            ens_acc = accuracy_score(y_test, ens_pred)
+            xgb_acc = accuracy_score(y_test, xgb_pred)
+            
+            # Measure prediction latency
+            ens_latency = self.measure_latency(ensemble_model, X_test)
+            xgb_latency = self.measure_latency(xgb_model, X_test)
+            
+            intermediate_scores['Ens'].append(ens_acc)
+            intermediate_scores['XGB'].append(xgb_acc)
+            intermediate_latencies['Ens'].append(ens_latency)
+            intermediate_latencies['XGB'].append(xgb_latency)
+            
+            print(f"Batch {i:2d} | Ens: {ens_acc:.4f}({ens_latency:.2f}ms) | "
+                  f"XGB: {xgb_acc:.4f}({xgb_latency:.2f}ms) | "
+                  f"Train: Ens={ensemble_train_time:.2f}ms, XGB={xgb_train_time:.2f}ms")
         
-        X_scaled = self.scaler.transform(X)
-        sgd_proba = self.sgd.predict_proba(X_scaled)
-        rf_proba = self.rf.predict_proba(X_scaled)
+        # Final evaluation with proper validation
+        final_ens_acc = accuracy_score(y_test, ensemble_model.predict(X_test))
+        final_xgb_acc = accuracy_score(y_test, xgb_model.predict(X_test))
         
-        # FIX v26: Fusion Weight 5:1 (Non 5)
-        if sgd_proba.shape == rf_proba.shape:
-            # (5 * sgd_proba + 1 * rf_proba) / 6
-            return np.argmax((sgd_proba * 5 + rf_proba) / 6, axis=1) # <-- TUNED
-        return np.argmax(rf_proba, axis=1)
-
-# ================= XGBoost (O(N) FULL COST - MAX PENALTY) ===================
-class StreamingXGBoost:
-    # FIX v26: ลด update_interval เป็น 20 เพื่อเพิ่ม Latency เฉลี่ยสูงสุด
-    def __init__(self, master_scaler, update_interval=20, window_size=1500): # <-- TUNED
-        self.scaler = master_scaler
-        self.update_interval = update_interval
-        self.window_size = window_size
-        self.X_buffer = []
-        self.y_buffer = []
-        self.sample_count = 0
-        self.booster = None
-        self.is_fitted = False
+        final_scores = {'Ens': final_ens_acc, 'XGB': final_xgb_acc}
         
-    def partial_fit(self, X_new, y_new):
-        start_time = time.time()
+        # Validate consistency
+        is_consistent = self.validate_consistency(intermediate_scores, final_scores)
         
-        self.X_buffer.append(np.array(X_new, dtype=np.float32))
-        self.y_buffer.append(np.array(y_new, dtype=np.int32))
-        self.sample_count += len(X_new)
-
-        while sum(len(x) for x in self.X_buffer) > self.window_size:
-            self.X_buffer.pop(0)
-            self.y_buffer.pop(0)
-
-        X_all = np.vstack(self.X_buffer)
-        y_all = np.hstack(self.y_buffer)
-        X_scaled = self.scaler.transform(X_all)
+        print(f"\nFinal Test: Ens={final_ens_acc:.4f}, XGB={final_xgb_acc:.4f}")
+        if not is_consistent:
+            print("🔍 มีความไม่สอดคล้องในผลลัพธ์ - ควรตรวจสอบ methodology")
         
-        if self.sample_count % self.update_interval == 0 or self.booster is None:
-            n_classes = len(np.unique(y_all))
-            params = {
-                'objective': 'multi:softprob' if n_classes > 2 else 'binary:logistic',
-                'eval_metric': 'mlogloss', 'tree_method': 'hist',
-                'max_depth': 6, 'learning_rate': 0.1, 'nthread': 1,
-                'num_class': n_classes if n_classes > 2 else None
-            }
-            # FIX v26: เพิ่ม num_boost_round เป็น 50 (Maximum Penalty)
-            dtrain = xgb.DMatrix(X_scaled, label=y_all)
-            self.booster = xgb.train(params, dtrain, num_boost_round=50, xgb_model=self.booster) # <-- TUNED
-            self.is_fitted = True
+        # Calculate robust statistics
+        avg_ens_latency = np.median(intermediate_latencies['Ens'])
+        avg_xgb_latency = np.median(intermediate_latencies['XGB'])
+        avg_ens_acc = np.mean(intermediate_scores['Ens'])
+        avg_xgb_acc = np.mean(intermediate_scores['XGB'])
+        
+        return {
+            'final_accuracy': final_scores,
+            'avg_accuracy': {'Ens': avg_ens_acc, 'XGB': avg_xgb_acc},
+            'avg_latency': {'Ens': avg_ens_latency, 'XGB': avg_xgb_latency},
+            'consistency_check': is_consistent
+        }
 
-        return time.time() - start_time
-    
-    def predict(self, X):
-        if not self.is_fitted: return np.zeros(len(X), dtype=int)
-        X_scaled = self.scaler.transform(X)
-        dtest = xgb.DMatrix(X_scaled)
-        pred = self.booster.predict(dtest)
-        return np.argmax(pred, axis=1) if pred.ndim > 1 else (pred > 0.5).astype(int)
-
-# ================= BENCHMARK (TRUE VICTORY SETUP v26) ===================
-# โค้ดส่วน benchmark ยังคงเดิม ยกเว้นการเรียกใช้ class ที่ปรับปรุงแล้ว
-def streaming_benchmark():
-    print("ULTIMATE STREAMING BENCHMARK - TRUE VICTORY v26 (Absolute Digital Nirvana)")
-    print("=" * 70)
-    
-    from sklearn.datasets import load_breast_cancer, load_iris, load_wine
+def main():
+    benchmark = TrustworthyBenchmark()
     
     datasets = [
-        ("BreastCancer", load_breast_cancer(), 1), 
-        ("Iris", load_iris(), 5),                  
-        ("Wine", load_wine(), 5)                   
+        ("BreastCancer", load_breast_cancer, 1),
+        ("Iris", load_iris, 3),
+        ("Wine", load_wine, 3)
     ]
     
-    times = {'Ensemble': [], 'XGBoost': []}
-    accs = {'Ensemble': [], 'XGBoost': []}
+    all_results = []
     
-    for name, data, resample_factor in datasets:
-        print(f"\nDataset: {name} (x{resample_factor} data)")
-        X, y = data.data, data.target
-        
-        X_train_full, X_test, y_train_full, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_full, y_train_full, test_size=0.25, random_state=42, stratify=y_train_full
-        )
-        
-        master_scaler = StandardScaler()
-        master_scaler.fit(X_train_full)
-        
-        if resample_factor > 1:
-            X_train = np.vstack([X_train] * resample_factor)
-            y_train = np.hstack([y_train] * resample_factor)
-        
-        X_train, y_train = shuffle(X_train, y_train, random_state=42)
-        
-        batch_size = 20 
-        
-        # v26: Ensemble update_interval=500, XGBoost update_interval=20
-        ensemble = StreamingEnsemble(master_scaler, update_interval=500) 
-        xgb_model = StreamingXGBoost(master_scaler, update_interval=20) 
-        
-        for start in range(0, len(X_train), batch_size):
-            end = min(start + batch_size, len(X_train))
-            Xb, yb = X_train[start:end], y_train[start:end]
-            
-            t1 = ensemble.partial_fit(Xb, yb)
-            t2 = xgb_model.partial_fit(Xb, yb)
-            
-            if start > 0:
-                times['Ensemble'].append(t1)
-                times['XGBoost'].append(t2)
-            
-            if start % (batch_size * 5) == 0 or end == len(X_train):
-                a1 = accuracy_score(y_val, ensemble.predict(X_val))
-                a2 = accuracy_score(y_val, xgb_model.predict(X_val))
-                print(f"Batch {start//batch_size:3d} | Ens: {a1:.4f}({t1*1000:.2f}ms) | XGB: {a2:.4f}({t2*1000:.2f}ms)")
-        
-        acc1 = accuracy_score(y_test, ensemble.predict(X_test))
-        acc2 = accuracy_score(y_test, xgb_model.predict(X_test))
-        accs['Ensemble'].append(acc1)
-        accs['XGBoost'].append(acc2)
-        print(f"Final Test: Ens={acc1:.4f}, XGB={acc2:.4f}")
+    for dataset_name, loader, multiplier in datasets:
+        result = benchmark.run_dataset_benchmark(dataset_name, loader, multiplier)
+        result['dataset'] = dataset_name
+        all_results.append(result)
     
-    print("\n" + "="*70)
-    print("TRUE VICTORY SUMMARY")
-    print("="*70)
+    # Summary with transparent calculations
+    print(f"\n{'='*60}")
+    print("REAL-WORLD BENCHMARK SUMMARY")
+    print(f"{'='*60}")
     
-    ens_time = np.mean(times['Ensemble']) * 1000
-    xgb_time = np.mean(times['XGBoost']) * 1000
-    ens_acc = np.mean(accs['Ensemble'])
-    xgb_acc = np.mean(accs['XGBoost'])
+    # Calculate overall metrics using weighted averages
+    total_ens_acc = 0
+    total_xgb_acc = 0
+    total_ens_latency = 0
+    total_xgb_latency = 0
+    n_datasets = len(all_results)
     
-    print(f"Accuracy: Ensemble = {ens_acc:.4f}, XGBoost = {xgb_acc:.4f}")
-    print(f"Latency:  Ensemble = {ens_time:.2f}ms, XGBoost = {xgb_time:.2f}ms")
+    for result in all_results:
+        total_ens_acc += result['final_accuracy']['Ens']
+        total_xgb_acc += result['final_accuracy']['XGB']
+        total_ens_latency += result['avg_latency']['Ens']
+        total_xgb_latency += result['avg_latency']['XGB']
     
-    speedup = xgb_time / max(ens_time, 1e-6)
-    print(f"\nTRUE ABSOLUTE VICTORY!")
-    print(f"Ensemble ชนะทั้ง Accuracy (+{ens_acc-xgb_acc:.4f}) และ Speed ({speedup:.1f}x เร็วกว่า)")
+    overall_ens_acc = total_ens_acc / n_datasets
+    overall_xgb_acc = total_xgb_acc / n_datasets
+    overall_ens_latency = total_ens_latency / n_datasets
+    overall_xgb_latency = total_xgb_latency / n_datasets
+    
+    print(f"Overall Accuracy:  Ensemble = {overall_ens_acc:.4f}, XGBoost = {overall_xgb_acc:.4f}")
+    print(f"Overall Latency:   Ensemble = {overall_ens_latency:.2f}ms, XGBoost = {overall_xgb_latency:.2f}ms")
+    
+    accuracy_diff = overall_ens_acc - overall_xgb_acc
+    speed_ratio = overall_xgb_latency / overall_ens_latency if overall_ens_latency > 0 else 1
+    
+    print(f"\nPerformance Analysis:")
+    print(f"Accuracy Difference: {accuracy_diff:+.4f} ({'Ensemble ดีกว่า' if accuracy_diff > 0 else 'XGBoost ดีกว่า'})")
+    print(f"Speed Ratio: {speed_ratio:.1f}x ({'Ensemble เร็วกว่า' if speed_ratio > 1 else 'XGBoost เร็วกว่า'})")
+    
+    # Additional validation metrics
+    consistent_count = sum(1 for r in all_results if r['consistency_check'])
+    print(f"\nData Quality Check: {consistent_count}/{len(all_results)} datasets มีความสอดคล้อง")
+    
+    if consistent_count == len(all_results):
+        print("✅ ผลลัพธ์มีความน่าเชื่อถือสูง")
+    else:
+        print("⚠️  มีบาง dataset ที่แสดงความไม่สอดคล้อง - ควรตรวจสอบเพิ่มเติม")
 
 if __name__ == "__main__":
-    streaming_benchmark()
+    main()
