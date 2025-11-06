@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ULTIMATE BENCHMARK: OneStep + Nyström vs XGBoost (10k, 50k, 100k samples)
-- Full data (no subsample)
-- Nyström approximation (m=2000)
-- Fair comparison: same preprocessing, single thread, CPU time
-- Saves results to benchmark_results/
+FIXED: OneStep + Nyström vs XGBoost (10k, 50k, 100k)
+- ใช้ beta แทน alpha
+- ไม่ต้องคำนวณ K_nm @ beta
+- เร็วขึ้น + แม่นยำ
 """
 
 import os
@@ -22,14 +21,13 @@ from sklearn.metrics import accuracy_score
 import psutil
 import gc
 from datetime import datetime
-import time
 
 def cpu_time():
     p = psutil.Process(os.getpid())
     return p.cpu_times().user + p.cpu_times().system
 
 # ========================================
-# 1. OneStep + Nyström
+# 1. OneStep + Nyström (FIXED)
 # ========================================
 class OneStepNystrom:
     def __init__(self, C=1.0, n_components=2000, gamma='scale', random_state=42):
@@ -39,7 +37,7 @@ class OneStepNystrom:
         self.random_state = random_state
         self.scaler = StandardScaler()
         self.landmarks_ = None
-        self.alpha_ = None
+        self.beta_ = None  # m × n_classes
         self.classes_ = None
 
     def fit(self, X, y):
@@ -52,11 +50,14 @@ class OneStepNystrom:
         self.landmarks_ = X[idx]
         
         gamma = 1.0 / X.shape[1] if self.gamma == 'scale' else self.gamma
+        
+        # K_nm: n × m
         K_nm = np.exp(-gamma * (
             (X**2).sum(1)[:, None] + 
             (self.landmarks_**2).sum(1)[None, :] - 
             2 * X @ self.landmarks_.T
         ))
+        # K_mm: m × m
         K_mm = np.exp(-gamma * (
             (self.landmarks_**2).sum(1)[:, None] + 
             (self.landmarks_**2).sum(1)[None, :] - 
@@ -71,20 +72,24 @@ class OneStepNystrom:
         for i, c in enumerate(self.classes_):
             y_onehot[y == c, i] = 1.0
         
-        beta = np.linalg.solve(K_reg, K_nm.T @ y_onehot)
-        self.alpha_ = K_nm @ beta
+        # beta = (K_mm + λI)^(-1) (K_mn^T y) → m × n_classes
+        self.beta_ = np.linalg.solve(K_reg, K_nm.T @ y_onehot)
         
         return self
 
     def predict(self, X):
         X = self.scaler.transform(X).astype(np.float32)
         gamma = 1.0 / X.shape[1] if self.gamma == 'scale' else self.gamma
+        
+        # K_test: n_test × m
         K_test = np.exp(-gamma * (
             (X**2).sum(1)[:, None] + 
             (self.landmarks_**2).sum(1)[None, :] - 
             2 * X @ self.landmarks_.T
         ))
-        scores = K_test @ self.alpha_
+        
+        # scores = K_test @ beta → n_test × n_classes
+        scores = K_test @ self.beta_
         return self.classes_[np.argmax(scores, axis=1)]
 
 # ========================================
@@ -208,7 +213,7 @@ Winner: Speed={winner_speed}, Acc={winner_acc}"""
 # 5. Main
 # ========================================
 if __name__ == "__main__":
-    os.system("mkdir -p benchmark_results")
+    os.makedirs('benchmark_results', exist_ok=True)
     results = []
     
     for n in [10000, 50000, 100000]:
