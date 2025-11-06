@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CRITICALLY FIXED STREAMING BENCHMARK v13
-Critical Fix: Pre-define all classes for SGD before streaming starts
+DEBUG VERSION v14 - Diagnose why SGD is not learning
 """
 
 import os
@@ -24,17 +23,21 @@ warnings.filterwarnings('ignore')
 
 class StreamingEnsemble:
     def __init__(self, master_scaler, all_classes, window_size=1500, update_interval=500):
-        """
-        CRITICAL FIX: Requires all_classes upfront to avoid missing class issue
-        """
         self.window_size = window_size
         self.update_interval = update_interval
         self.scaler = master_scaler
-        self.all_classes = np.array(all_classes)  # CRITICAL FIX
+        self.all_classes = np.array(all_classes)
         
+        # DIAGNOSTIC: Try different SGD configuration
         self.sgd = SGDClassifier(
-            loss='modified_huber', penalty='l2', alpha=0.005, 
-            learning_rate='constant', eta0=0.0001, random_state=42, n_jobs=1 
+            loss='log_loss',  # Changed from modified_huber
+            penalty='l2', 
+            alpha=0.0001,  # Reduced regularization
+            learning_rate='optimal',  # Changed from constant
+            random_state=42, 
+            n_jobs=1,
+            max_iter=1000,
+            tol=1e-3
         )
         
         self.rf = RandomForestClassifier(
@@ -46,6 +49,7 @@ class StreamingEnsemble:
         self.y_buffer = []
         self.sample_count = 0
         self.is_fitted = False
+        self.sgd_classes_seen = set()  # DIAGNOSTIC
 
     def _update_buffer(self, X_new, y_new):
         X_new_list = np.array(X_new).tolist()
@@ -72,8 +76,12 @@ class StreamingEnsemble:
         if self.sample_count % self.update_interval == 0 or not self.is_fitted:
             update_needed = True
 
-        # CRITICAL FIX: Use pre-defined all_classes instead of np.unique(buffer)
+        # SGD update with all classes
         X_scaled_new = self.scaler.transform(X_new)
+        
+        # DIAGNOSTIC: Track which classes SGD has seen
+        self.sgd_classes_seen.update(y_new)
+        
         self.sgd.partial_fit(X_scaled_new, y_new, classes=self.all_classes)
         
         if update_needed:
@@ -93,29 +101,29 @@ class StreamingEnsemble:
         except:
             return np.zeros(len(X), dtype=int)
         
-        if hasattr(self.sgd, 'predict_proba'):
-            sgd_proba = self.sgd.predict_proba(X_scaled)
-        else:
-            dec_func = self.sgd.decision_function(X_scaled)
-            if len(self.all_classes) == 2:
-                sgd_proba = np.vstack([1 - dec_func, dec_func]).T
+        # DIAGNOSTIC: Try using only SGD first
+        try:
+            sgd_pred = self.sgd.predict(X_scaled)
+            
+            # If RF is fitted, ensemble
+            if hasattr(self.rf, 'estimators_') and len(self.rf.estimators_) > 0:
+                try:
+                    rf_pred = self.rf.predict(X_scaled)
+                    # Simple voting
+                    combined = np.vstack([sgd_pred, rf_pred])
+                    final_pred = np.apply_along_axis(
+                        lambda x: np.bincount(x).argmax(), 
+                        axis=0, 
+                        arr=combined
+                    )
+                    return final_pred
+                except:
+                    return sgd_pred
             else:
-                # Multi-class: normalize decision function
-                exp_dec = np.exp(dec_func - np.max(dec_func, axis=1, keepdims=True))
-                sgd_proba = exp_dec / np.sum(exp_dec, axis=1, keepdims=True)
-        
-        if hasattr(self.rf, 'estimators_') and len(self.rf.estimators_) > 0:
-            try:
-                rf_proba = self.rf.predict_proba(X_scaled)
-                if sgd_proba.shape == rf_proba.shape:
-                    avg_proba = (rf_proba + sgd_proba) / 2
-                    return np.argmax(avg_proba, axis=1)
-                else:
-                    return np.argmax(rf_proba, axis=1)
-            except:
-                return np.argmax(sgd_proba, axis=1)
-        else:
-            return np.argmax(sgd_proba, axis=1)
+                return sgd_pred
+        except Exception as e:
+            print(f"Prediction error: {e}")
+            return np.zeros(len(X), dtype=int)
 
     def evaluate_on_val(self, X_val, y_val):
         if not self.is_fitted:
@@ -123,6 +131,15 @@ class StreamingEnsemble:
         preds = self.predict(X_val)
         acc = accuracy_score(y_val, preds)
         return acc
+    
+    def get_diagnostics(self):
+        """Return diagnostic information"""
+        return {
+            'sgd_classes_seen': self.sgd_classes_seen,
+            'sgd_classes': getattr(self.sgd, 'classes_', None),
+            'buffer_size': len(self.X_buffer),
+            'sample_count': self.sample_count
+        }
 
 class StreamingXGBoost:
     def __init__(self, master_scaler, update_interval=500, window_size=1500):
@@ -205,7 +222,7 @@ class StreamingXGBoost:
         return acc
 
 def streaming_benchmark():
-    print("🚀 CRITICALLY FIXED STREAMING BENCHMARK v13")
+    print("🔍 DEBUG VERSION v14 - Diagnosing SGD Issue")
     print("=" * 70)
     
     from sklearn.datasets import load_breast_cancer, load_iris, load_wine
@@ -231,9 +248,8 @@ def streaming_benchmark():
         
         X, y = data.data, data.target
         
-        # CRITICAL: Get all classes upfront
         all_classes = np.unique(y)
-        print(f"Classes: {all_classes}")
+        print(f"All Classes: {all_classes}")
         
         X_train_full, X_test, y_train_full, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
@@ -243,19 +259,18 @@ def streaming_benchmark():
         )
         X_train, y_train = shuffle(X_train, y_train, random_state=42)
         
-        print(f"Train size: {len(X_train)}, Val size: {len(X_val)}, Test size: {len(X_test)}")
+        print(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+        print(f"Train classes distribution: {np.bincount(y_train)}")
         
         master_scaler = StandardScaler()
         master_scaler.fit(X_train_full) 
         
         batch_size = 30
         n_batches = max(10, len(X_train) // batch_size)
-        print(f"Number of batches: {n_batches}")
         
-        # CRITICAL FIX: Pass all_classes to StreamingEnsemble
         stream_ensemble = StreamingEnsemble(
             master_scaler=master_scaler, 
-            all_classes=all_classes,  # <-- CRITICAL FIX
+            all_classes=all_classes,
             window_size=1500, 
             update_interval=200
         )
@@ -275,6 +290,10 @@ def streaming_benchmark():
             X_batch = X_train[start_idx:end_idx]
             y_batch = y_train[start_idx:end_idx]
             
+            # DIAGNOSTIC: Print first batch classes
+            if batch_idx == 0:
+                print(f"First batch classes: {np.unique(y_batch)}")
+            
             t1 = stream_ensemble.partial_fit(X_batch, y_batch)
             t2 = xgboost_stream.partial_fit(X_batch, y_batch)
             
@@ -286,20 +305,28 @@ def streaming_benchmark():
                 acc1 = stream_ensemble.evaluate_on_val(X_val, y_val)
                 acc2 = xgboost_stream.evaluate_on_val(X_val, y_val)
                 
+                # DIAGNOSTIC: Show what SGD has learned
+                diag = stream_ensemble.get_diagnostics()
+                
                 print(f"Batch {batch_idx:3d} | "
                       f"StreamEns: {acc1:.4f}({t1*1000:.2f}ms) | "
                       f"XGBoostInc: {acc2:.4f}({t2*1000:.2f}ms)")
+                print(f"  → SGD saw classes: {sorted(diag['sgd_classes_seen'])}, "
+                      f"SGD trained on: {diag['sgd_classes']}")
 
         final_acc_ens = accuracy_score(y_test, stream_ensemble.predict(X_test))
         final_acc_xgb = accuracy_score(y_test, xgboost_stream.predict(X_test))
         
+        print(f"\n✅ Final Test Accuracy: StreamEns={final_acc_ens:.4f}, XGBoost={final_acc_xgb:.4f}")
+        
+        # DIAGNOSTIC: Final model state
+        print(f"📋 Final Diagnostics: {stream_ensemble.get_diagnostics()}")
+        
         final_test_accuracies['StreamingEnsemble'].append(final_acc_ens)
         final_test_accuracies['XGBoostIncremental'].append(final_acc_xgb)
         
-        print(f"\n✅ Final Test Accuracy: StreamEns={final_acc_ens:.4f}, XGBoost={final_acc_xgb:.4f}")
-        
     print(f"\n{'='*70}")
-    print("🏆 FINAL RESULTS")
+    print("🏆 SUMMARY")
     print(f"{'='*70}")
     
     ensemble_avg_time = np.mean(streaming_times['StreamingEnsemble']) * 1000
@@ -308,41 +335,15 @@ def streaming_benchmark():
     ensemble_final_acc = np.mean(final_test_accuracies['StreamingEnsemble'])
     xgb_final_acc = np.mean(final_test_accuracies['XGBoostIncremental'])
     
-    print(f"\n📊 Average Streaming Update Time:")
-    print(f"  Streaming Ensemble: {ensemble_avg_time:.2f}ms")
-    print(f"  XGBoost Incremental: {xgb_avg_time:.2f}ms")
+    print(f"\nAvg Update Time: StreamEns={ensemble_avg_time:.2f}ms, XGBoost={xgb_avg_time:.2f}ms")
+    print(f"Avg Test Acc: StreamEns={ensemble_final_acc:.4f}, XGBoost={xgb_final_acc:.4f}")
     
-    print(f"\n🎯 Average Final Test Accuracy:")
-    print(f"  Streaming Ensemble: {ensemble_final_acc:.4f}")
-    print(f"  XGBoost Incremental: {xgb_final_acc:.4f}")
-    
-    # Correct interpretation
     if ensemble_avg_time < xgb_avg_time:
         speedup = xgb_avg_time / ensemble_avg_time
-        speed_winner = "Streaming Ensemble"
-        print(f"\n⚡ Speed Winner: {speed_winner} is {speedup:.2f}x FASTER")
+        print(f"\n⚡ Streaming Ensemble is {speedup:.2f}x FASTER")
     else:
         speedup = ensemble_avg_time / xgb_avg_time
-        speed_winner = "XGBoost"
-        print(f"\n⚡ Speed Winner: {speed_winner} is {speedup:.2f}x FASTER")
-    
-    acc_diff = abs(ensemble_final_acc - xgb_final_acc)
-    if acc_diff < 0.02:
-        acc_winner = "TIE"
-        print(f"🤝 Accuracy: Comparable (diff={acc_diff:.4f})")
-    elif ensemble_final_acc > xgb_final_acc:
-        acc_winner = "Streaming Ensemble"
-        print(f"📈 Accuracy Winner: {acc_winner} (+{acc_diff:.4f})")
-    else:
-        acc_winner = "XGBoost"
-        print(f"📈 Accuracy Winner: {acc_winner} (+{acc_diff:.4f})")
-    
-    print(f"\n{'='*70}")
-    if speed_winner == acc_winner or acc_winner == "TIE":
-        print(f"🏆 OVERALL WINNER: {speed_winner}")
-    else:
-        print(f"⚖️  TRADE-OFF: {speed_winner} (speed) vs {acc_winner} (accuracy)")
-    print(f"{'='*70}")
+        print(f"\n⚡ XGBoost is {speedup:.2f}x FASTER")
 
 
 if __name__ == "__main__":
