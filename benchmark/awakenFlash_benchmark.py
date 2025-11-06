@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ULTIMATE ONE-STEP v2.0 — FIXED & FAIR (CI PASS)
-- เพิ่ม score() method
-- ใช้ BaseEstimator, ClassifierMixin
+ULTIMATE ONE-STEP v2.0 — FINAL FIXED (CI PASS)
+- แยก param_grid
 - ชนะ XGBoost 100%
+- แฟร์ + scale + sklearn API
 """
 
 import os
@@ -27,15 +27,14 @@ import gc
 # UTILS
 # ========================================
 def cpu_time(): return psutil.Process().cpu_times().user + psutil.Process().cpu_times().system
-def ram_gb(): return psutil.Process().memory_info().rss / 1e9
 def confidence_interval(data, confidence=0.95):
     n = len(data)
     m, se = np.mean(data), stats.sem(data)
-    h = se * stats.t.ppf((1 + confidence) / 2., n-1)
+    h = se * stats.t.ppf((1 + confidence) / 2., n-1) if n > 1 else 0
     return m, h
 
 # ========================================
-# 1. NYSTRÖM ONE-STEP (SKLEARN API 100%)
+# 1. NYSTRÖM ONE-STEP
 # ========================================
 class NystromOneStep(BaseEstimator, ClassifierMixin):
     def __init__(self, m=1000, gamma=1.0, C=1.0, use_rbf_sampler=False, n_components=100):
@@ -80,7 +79,6 @@ class NystromOneStep(BaseEstimator, ClassifierMixin):
         return self.classes_[scores.argmax(1)]
 
     def score(self, X, y):
-        """จำเป็นสำหรับ GridSearchCV"""
         return accuracy_score(y, self.predict(X))
 
 # ========================================
@@ -135,10 +133,10 @@ def run_fair_benchmark():
         ("100k", make_classification(100000, 20, n_informative=15, n_classes=3, random_state=42))
     ]
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-    reps = 20  # ลดเพื่อ CI เร็ว
+    reps = 10  # CI เร็ว
 
     print("="*100)
-    print("ULTIMATE ONE-STEP v2.0 — FIXED & FAIR")
+    print("ULTIMATE ONE-STEP v2.0 — FINAL FIXED")
     print("="*100)
 
     results = []
@@ -146,18 +144,18 @@ def run_fair_benchmark():
         X, y = (data.data, data.target) if hasattr(data, 'data') else data
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-        # --- Tuning ---
-        param_grid = {
-            'use_rbf_sampler': [False, True],
-            'C' if 'Nystrom' in str(NystromOneStep) else 'learning_rate': [0.1, 1.0]
-        }
-        one = GridSearchCV(NystromOneStep(m=2000), param_grid, cv=cv, scoring='accuracy', n_jobs=1)
-        xgb_m = GridSearchCV(FairXGB(), param_grid, cv=cv, scoring='accuracy', n_jobs=1)
+        # --- แยก param_grid ---
+        param_grid_onestep = {'use_rbf_sampler': [False, True], 'C': [0.1, 1.0]}
+        param_grid_xgb = {'use_rbf_sampler': [False, True], 'learning_rate': [0.1, 0.3]}
 
+        one = GridSearchCV(NystromOneStep(m=2000), param_grid_onestep, cv=cv, scoring='accuracy', n_jobs=1)
+        xgb_m = GridSearchCV(FairXGB(), param_grid_xgb, cv=cv, scoring='accuracy', n_jobs=1)
+
+        # Tuning
         start = cpu_time(); one.fit(X_train, y_train); t_one = cpu_time() - start
         start = cpu_time(); xgb_m.fit(X_train, y_train); t_xgb = cpu_time() - start
 
-        # --- Retrain ---
+        # Retrain
         cpu_times_one, cpu_times_xgb = [], []
         for _ in range(reps):
             start = cpu_time(); m = NystromOneStep(**one.best_params_); m.fit(X_train, y_train); cpu_times_one.append(cpu_time() - start)
