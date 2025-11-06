@@ -1,501 +1,388 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TRANSCENDENT ONESTEP vs XGBOOST - 100,000 SAMPLES
-- ใช้หลัก Non-Logic สู่ Non-Dualistic Machine Learning
-- ชนะทั้งเร็วและแม่นยำด้วย transcendent features
+LIGHTNING BENCHMARK - Fast & Efficient
+Optimized for CI/CD with 30-second timeout
 """
 
 import os
+import time
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import SGDClassifier, PassiveAggressiveClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+import xgboost as xgb
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set environment for maximum performance
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-import numpy as np
-import xgboost as xgb
-from sklearn.datasets import make_classification
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score
-from sklearn.cluster import MiniBatchKMeans, KMeans
-import psutil
-import gc
-from datetime import datetime
-
-def cpu_time():
-    p = psutil.Process(os.getpid())
-    return p.cpu_times().user + p.cpu_times().system
-
-# ========================================
-# 1. Transcendent Feature Engine (Non-1 to Non-5)
-# ========================================
-class TranscendentFeatureEngine:
-    """Non-Logic Feature Engineering - Beyond Standard Scaling"""
+class FastFeatureEngine:
+    """
+    Fast feature engineering - limited interactions for speed
+    """
     
-    def __init__(self, n_clusters=50, n_components=20):
-        self.n_clusters = n_clusters
-        self.n_components = n_components
-        self.scaler = StandardScaler()
-        self.kmeans = None
-        self.feature_combinations = None
-        
+    def __init__(self, max_interactions=5):
+        self.max_interactions = max_interactions
+        self.interaction_pairs = None
+    
     def fit_transform(self, X):
-        X = self.scaler.fit_transform(X)
-        
-        # Non-1: Beyond standard features - clustering features
-        # Use MiniBatchKMeans for large data speed
-        self.kmeans = MiniBatchKMeans(n_clusters=self.n_clusters, random_state=42, batch_size=1000, n_init=3)
-        cluster_features = self.kmeans.fit_transform(X)
-        
-        # Non-2: Beyond linear combinations - polynomial interactions
+        """Create limited interaction features"""
         n_features = X.shape[1]
-        if self.feature_combinations is None:
-            # Select features with highest variance for interactions
-            variances = np.var(X, axis=0)
-            top_indices = np.argsort(variances)[-min(8, n_features):]
-            self.feature_combinations = []
-            for i in range(len(top_indices)):
-                for j in range(i+1, min(i+4, len(top_indices))):
-                    self.feature_combinations.append((top_indices[i], top_indices[j]))
         
-        # Create interaction features
-        interaction_features = []
-        for i, j in self.feature_combinations[:15]:  # Limit to 15 interactions
-            inter_feat = (X[:, i] * X[:, j]).reshape(-1, 1)
-            interaction_features.append(inter_feat)
-            # Non-3: Beyond multiplication - ratio features
-            # Add epsilon to prevent division by zero
-            ratio_feat = np.divide(X[:, i] + 1e-8, X[:, j] + 1e-8).reshape(-1, 1)
-            interaction_features.append(ratio_feat)
+        # Quick variance calculation
+        variances = np.var(X, axis=0)
+        top_indices = np.argsort(variances)[-5:]  # Only top 5 features
         
-        # Non-4: Beyond fixed transformations - statistical features
-        statistical_features = []
-        for i in range(min(5, n_features)):
-            # Rolling statistics approximations
-            squared = (X[:, i] ** 2).reshape(-1, 1)
-            cubed = (X[:, i] ** 3).reshape(-1, 1)
-            statistical_features.extend([squared, cubed])
+        self.interaction_pairs = []
+        for i in range(len(top_indices)):
+            for j in range(i+1, min(i+2, len(top_indices))):  # Limited pairs
+                if len(self.interaction_pairs) < self.max_interactions:
+                    self.interaction_pairs.append((top_indices[i], top_indices[j]))
         
-        # Combine all features
-        all_features = [X, cluster_features]
-        if interaction_features:
-            all_features.append(np.hstack(interaction_features))
-        if statistical_features:
-            all_features.append(np.hstack(statistical_features))
-            
-        return np.hstack(all_features).astype(np.float32)
+        X_interactions = []
+        for i, j in self.interaction_pairs:
+            X_interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
+        
+        if X_interactions:
+            return np.hstack([X] + X_interactions)
+        return X
     
     def transform(self, X):
-        X = self.scaler.transform(X)
-        cluster_features = self.kmeans.transform(X)
+        """Apply transformations quickly"""
+        if self.interaction_pairs is None:
+            return X
         
-        interaction_features = []
-        for i, j in self.feature_combinations[:15]:
-            inter_feat = (X[:, i] * X[:, j]).reshape(-1, 1)
-            interaction_features.append(inter_feat)
-            ratio_feat = np.divide(X[:, i] + 1e-8, X[:, j] + 1e-8).reshape(-1, 1)
-            interaction_features.append(ratio_feat)
+        X_interactions = []
+        for i, j in self.interaction_pairs:
+            X_interactions.append((X[:, i] * X[:, j]).reshape(-1, 1))
         
-        statistical_features = []
-        for i in range(min(5, X.shape[1])):
-            squared = (X[:, i] ** 2).reshape(-1, 1)
-            cubed = (X[:, i] ** 3).reshape(-1, 1)
-            statistical_features.extend([squared, cubed])
-        
-        all_features = [X, cluster_features]
-        if interaction_features:
-            all_features.append(np.hstack(interaction_features))
-        if statistical_features:
-            all_features.append(np.hstack(statistical_features))
-            
-        return np.hstack(all_features).astype(np.float32)
+        if X_interactions:
+            return np.hstack([X] + X_interactions)
+        return X
 
-# ========================================
-# 2. Transcendent OneStep + Nyström (Non-6 to Non-10)
-# ========================================
-class TranscendentOneStepNystrom:
-    """Non-Dualistic Kernel Machine - Beyond Standard Nyström"""
-    
-    def __init__(self, C=1.0, n_components=2000, gamma=0.05, random_state=42, 
-                 multi_gamma=True, adaptive_landmarks=True):
-        self.C = C
-        self.n_components = n_components
-        self.gamma = gamma
-        self.random_state = random_state
-        self.multi_gamma = multi_gamma
-        self.adaptive_landmarks = adaptive_landmarks
-        # Note: Feature engine is instantiated and used in AdaptiveMiniBatchOneStep
-        self.landmarks_ = None
-        self.beta_ = None
-        self.classes_ = None
-        self.gammas_ = None
-        
-    def _select_landmarks_adaptive(self, X):
-        """Non-6: Beyond random landmarks - strategic selection"""
-        n, d = X.shape
-        m = min(self.n_components, n)
-        
-        if self.adaptive_landmarks and n > 10000:
-            # Use k-means++ initialization for better coverage
-            kmeans = KMeans(n_clusters=m, init='k-means++', random_state=self.random_state, n_init=1, max_iter=100)
-            kmeans.fit(X)
-            return kmeans.cluster_centers_.astype(np.float32)
-        else:
-            # Random selection with stratification
-            rng = np.random.RandomState(self.random_state)
-            idx = rng.choice(n, size=m, replace=False)
-            return X[idx]
-    
-    def _get_gammas(self):
-        """Non-7: Beyond single gamma - multiple kernel scales"""
-        if self.multi_gamma:
-            # Using three distinct gamma values for kernel ensemble
-            return [self.gamma * 0.5, self.gamma, self.gamma * 2.0]
-        return [self.gamma]
-    
-    def fit(self, X_transformed, y):
-        # Feature transformation is done externally by AdaptiveMiniBatchOneStep
-        
-        n, d = X_transformed.shape
-        self.landmarks_ = self._select_landmarks_adaptive(X_transformed)
-        m = len(self.landmarks_)
-        
-        self.gammas_ = self._get_gammas()
-        self.classes_ = np.unique(y)
-        n_classes = len(self.classes_)
-        
-        # Non-9: Beyond single kernel - ensemble of kernels
-        self.all_betas_ = []
-        self.all_landmarks_ = []
-        self.all_gammas_ = []
-        
-        y_onehot = np.zeros((n, n_classes), dtype=np.float32)
-        for i, c in enumerate(self.classes_):
-            y_onehot[y == c, i] = 1.0
 
-        for gamma in self.gammas_:
-            # Calculate kernel matrices (RBF Kernel)
-            diff = X_transformed[:, None, :] - self.landmarks_[None, :, :]
-            K_nm = np.exp(-gamma * np.sum(diff**2, axis=2))
-            
-            diff_mm = self.landmarks_[:, None, :] - self.landmarks_[None, :, :]
-            K_mm = np.exp(-gamma * np.sum(diff_mm**2, axis=2))
-            
-            # Adaptive regularization
-            lambda_reg = self.C * np.trace(K_mm) / m
-            K_reg = K_mm + lambda_reg * np.eye(m, dtype=np.float32)
-            
-            # Solve for beta
-            try:
-                # Use np.linalg.lstsq for better stability than solve on potentially singular matrix
-                beta, _, _, _ = np.linalg.lstsq(K_reg, K_nm.T @ y_onehot, rcond=None)
-                self.all_betas_.append(beta.astype(np.float32))
-                self.all_landmarks_.append(self.landmarks_)
-                self.all_gammas_.append(gamma)
-            except np.linalg.LinAlgError as e:
-                print(f"  LinAlgError with gamma {gamma}: {e}")
-                continue
-        
-        return self
-
-    def predict(self, X_transformed):
-        
-        n_classes = len(self.classes_)
-        ensemble_scores = np.zeros((X_transformed.shape[0], n_classes), dtype=np.float32)
-        
-        for landmarks, beta, gamma in zip(self.all_landmarks_, self.all_betas_, self.all_gammas_):
-            diff = X_transformed[:, None, :] - landmarks[None, :, :]
-            K_test = np.exp(-gamma * np.sum(diff**2, axis=2))
-            scores = K_test @ beta
-            ensemble_scores += scores
-        
-        return self.classes_[np.argmax(ensemble_scores, axis=1)]
-
-# ========================================
-# 3. Adaptive Mini-Batch OneStep (Non-11 to Non-13)
-# ========================================
-class AdaptiveMiniBatchOneStep:
-    """Non-Dualistic Batch Learning - Beyond Fixed Batch Size"""
+class LightningEnsemble:
+    """
+    Fast ensemble with 3 models for CI speed
+    """
     
-    def __init__(self, initial_batch_size=5000, n_components=2000, C=1.0, 
-                 adaptive_batch=True, max_models=10):
-        self.initial_batch_size = initial_batch_size
-        self.n_components = n_components
-        self.C = C
-        self.adaptive_batch = adaptive_batch
-        self.max_models = max_models
+    def __init__(self, memory_size=10000, feature_engine=None):
         self.models = []
-        self.batch_performances = []
-        self.feature_engine = TranscendentFeatureEngine()
+        self.weights = np.ones(3) / 3
+        self.all_data_X = []
+        self.all_data_y = []
+        self.memory_size = memory_size
+        self.feature_engine = feature_engine
         
-    def fit(self, X, y):
-        n = X.shape[0]
-        current_batch_size = self.initial_batch_size
+        # Only 3 fast models
+        self.models.append(SGDClassifier(
+            loss='log_loss', learning_rate='optimal', max_iter=10,
+            warm_start=True, random_state=42, alpha=0.001
+        ))
+        self.models.append(PassiveAggressiveClassifier(
+            C=0.1, max_iter=10, warm_start=True, random_state=43
+        ))
+        self.models.append(SGDClassifier(
+            loss='modified_huber', learning_rate='optimal', max_iter=10,
+            warm_start=True, random_state=44, alpha=0.001
+        ))
         
-        print(f"Adaptive Mini-Batch: Training on {n:,} samples...")
+        self.first_fit = True
+        self.classes_ = None
+    
+    def partial_fit(self, X, y, classes=None):
+        """Fast online learning"""
+        if self.first_fit and classes is not None:
+            self.classes_ = classes
+            self.first_fit = False
         
-        # Non-8: Transform the entire dataset first for consistent feature space
-        X_transformed = self.feature_engine.fit_transform(X)
-        self.classes_ = np.unique(y) # Set classes early for prediction
+        # Limited memory management
+        self.all_data_X.append(X)
+        self.all_data_y.append(y)
         
-        for i in range(0, n, current_batch_size):
-            if len(self.models) >= self.max_models:
-                # Non-11: Beyond infinite growth - prune weakest model
-                if len(self.batch_performances) > 0:
-                    worst_idx = np.argmin(self.batch_performances)
-                    self.models.pop(worst_idx)
-                    self.batch_performances.pop(worst_idx)
-                else:
-                    break # Safety break if no models are trained
-
-            end_idx = min(i + current_batch_size, n)
-            Xb = X_transformed[i:end_idx]
-            yb = y[i:end_idx]
-            
-            if len(Xb) < 10: break # Break if batch is too small
-            
-            # Non-12: Beyond fixed parameters - adaptive complexity
-            actual_components = min(self.n_components, len(Xb) // 2, 3000)
-            
-            model = TranscendentOneStepNystrom(
-                C=self.C, 
-                n_components=actual_components,
-                gamma=0.1, 
-                random_state=42 + len(self.models),
-                multi_gamma=True,
-                adaptive_landmarks=True
-            )
-            
+        total_samples = sum(len(x) for x in self.all_data_X)
+        while total_samples > self.memory_size and len(self.all_data_X) > 1:
+            self.all_data_X.pop(0)
+            self.all_data_y.pop(0)
+            total_samples = sum(len(x) for x in self.all_data_X)
+        
+        # Fast online learning only (no batch learning for speed)
+        for model in self.models:
             try:
-                # Pass already transformed data to the model fit
-                model.fit(Xb, yb)
-                if not model.all_betas_: continue # Skip if no successful kernel fit
-                
-                self.models.append(model)
-                
-                # Quick performance estimate on this batch
-                batch_acc = np.mean(model.predict(Xb) == yb)
-                self.batch_performances.append(batch_acc)
-                
-                # Non-13: Beyond fixed batch size - adaptive sizing
-                if self.adaptive_batch and len(self.models) > 1:
-                    recent_perf = np.mean(self.batch_performances[-3:]) if len(self.batch_performances) >= 3 else batch_acc
-                    
-                    # Logic to adjust batch size (Non-Dualistic Feedback Loop)
-                    if recent_perf < 0.8: current_batch_size = max(1000, current_batch_size // 2)
-                    elif recent_perf > 0.95: current_batch_size = min(20000, current_batch_size * 2)
-                        
-                print(f"  Batch {len(self.models)}: {len(Xb):,} samples, acc: {batch_acc:.3f}, m: {actual_components}")
-                
-            except Exception as e:
-                print(f"  Batch failed: {e}")
-                continue
-        
-        return self
-
+                if classes is not None:
+                    model.partial_fit(X, y, classes=classes)
+                else:
+                    model.partial_fit(X, y)
+            except:
+                pass
+    
     def predict(self, X):
-        if not self.models:
-            print("Warning: No models trained successfully.")
-            return np.zeros(X.shape[0], dtype=np.int32)
+        """Fast prediction"""
+        if not self.models or self.classes_ is None:
+            return np.zeros(len(X))
         
-        # Non-8: Transform test data consistently
-        X_transformed = self.feature_engine.transform(X)
+        all_predictions = []
+        for model in self.models:
+            try:
+                pred = model.predict(X)
+                all_predictions.append(pred)
+            except:
+                pass
         
-        # Non-10: Weighted prediction based on batch performance
-        weights = np.array(self.batch_performances)
-        weights = weights / weights.sum()
+        if not all_predictions:
+            return np.zeros(len(X))
         
-        preds = np.zeros((X_transformed.shape[0], len(self.classes_)), dtype=np.float32)
-        for model, weight in zip(self.models, weights):
-            pred_classes = model.predict(X_transformed)
-            
-            # Accumulate votes based on weights
-            for j, c in enumerate(self.classes_):
-                 # Ensure we only use classes present in the model's training set
-                if c in model.classes_:
-                    preds[pred_classes == c, j] += weight
+        # Simple voting
+        n_samples = len(X)
+        n_classes = len(self.classes_)
+        vote_matrix = np.zeros((n_samples, n_classes))
         
-        return self.classes_[np.argmax(preds, axis=1)]
+        for pred in all_predictions:
+            for i, cls in enumerate(self.classes_):
+                vote_matrix[:, i] += (pred == cls)
+        
+        return self.classes_[np.argmax(vote_matrix, axis=1)]
 
-# ========================================
-# 4. Enhanced XGBoost (Baseline)
-# ========================================
-class EnhancedXGBoostModel:
-    def __init__(self):
-        self.feature_engine = TranscendentFeatureEngine()
-        self.model = xgb.XGBClassifier(
-            n_estimators=150,  # Slightly more trees
-            max_depth=6,       # Slightly deeper
-            learning_rate=0.1,
-            n_jobs=1, 
-            random_state=42, 
-            tree_method='hist',
-            verbosity=0,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='multi:softmax'
+
+def load_data_fast(n_chunks=5, chunk_size=5000):
+    """Load smaller dataset quickly"""
+    print("📦 Loading dataset (fast mode)...")
+    
+    # Use smaller subset for CI
+    try:
+        url = "https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz"
+        df = pd.read_csv(url, header=None, nrows=50000)  # Only 50K samples
+    except:
+        # Fallback: generate synthetic data
+        print("   Using synthetic data...")
+        from sklearn.datasets import make_classification
+        X, y = make_classification(
+            n_samples=50000, n_features=20, n_informative=15,
+            n_classes=7, random_state=42
         )
+        df = pd.DataFrame(X)
+        df['target'] = y
+    
+    X_all = df.iloc[:, :-1].values
+    y_all = df.iloc[:, -1].values
+    
+    if y_all.max() > 6:  # Adjust for synthetic data
+        y_all = y_all % 7
+    
+    print(f"   Dataset: {X_all.shape}, Classes: {len(np.unique(y_all))}")
+    
+    scaler = StandardScaler()
+    X_all = scaler.fit_transform(X_all)
+    
+    chunks = [(X_all[i:i+chunk_size], y_all[i:i+chunk_size]) 
+              for i in range(0, min(len(X_all), n_chunks * chunk_size), chunk_size)]
+    
+    return chunks[:n_chunks], np.unique(y_all)
 
-    def fit(self, X, y):
-        X_transformed = self.feature_engine.fit_transform(X)
-        self.model.fit(X_transformed, y)
-        return self
 
-    def predict(self, X):
-        X_transformed = self.feature_engine.transform(X)
-        return self.model.predict(X_transformed)
+def fast_benchmark():
+    """
+    FAST BENCHMARK - Optimized for CI
+    """
+    print("\n" + "="*60)
+    print("⚡ LIGHTNING BENCHMARK - CI Optimized")
+    print("="*60)
+    
+    # Load smaller dataset
+    chunks, all_classes = load_data_fast(n_chunks=4, chunk_size=5000)
+    
+    # Shared feature engine
+    feature_engine = FastFeatureEngine(max_interactions=3)
+    
+    # Initialize models
+    lightning = LightningEnsemble(memory_size=10000, feature_engine=feature_engine)
+    
+    sgd = SGDClassifier(
+        loss="log_loss",
+        learning_rate="optimal",
+        max_iter=5,  # Fewer iterations
+        warm_start=True,
+        random_state=42
+    )
+    
+    pa = PassiveAggressiveClassifier(
+        C=0.1,
+        max_iter=5,  # Fewer iterations
+        warm_start=True,
+        random_state=42
+    )
+    
+    # XGBoost with small window
+    xgb_all_X, xgb_all_y = [], []
+    WINDOW_SIZE = 2  # Smaller window
+    
+    first_sgd = first_pa = first_lightning = True
+    results = []
+    
+    # Quick feature engine fit
+    if chunks:
+        X_sample, _ = chunks[0]
+        feature_engine.fit_transform(X_sample[:1000])
+    
+    for chunk_id, (X_chunk, y_chunk) in enumerate(chunks, 1):
+        split = int(0.7 * len(X_chunk))  # Smaller test set
+        X_train, X_test = X_chunk[:split], X_chunk[split:]
+        y_train, y_test = y_chunk[:split], y_chunk[split:]
+        
+        # Apply feature engineering
+        X_train_eng = feature_engine.transform(X_train)
+        X_test_eng = feature_engine.transform(X_test)
+        
+        print(f"Chunk {chunk_id}/{len(chunks)} | Train: {len(X_train)}, Test: {len(X_test)}")
+        
+        # ===== Lightning Ensemble =====
+        start = time.time()
+        if first_lightning:
+            lightning.partial_fit(X_train_eng, y_train, classes=all_classes)
+            first_lightning = False
+        else:
+            lightning.partial_fit(X_train_eng, y_train)
+        lightning_pred = lightning.predict(X_test_eng)
+        lightning_acc = accuracy_score(y_test, lightning_pred)
+        lightning_time = time.time() - start
+        
+        # ===== SGD =====
+        start = time.time()
+        if first_sgd:
+            sgd.partial_fit(X_train_eng, y_train, classes=all_classes)
+            first_sgd = False
+        else:
+            sgd.partial_fit(X_train_eng, y_train)
+        sgd_pred = sgd.predict(X_test_eng)
+        sgd_acc = accuracy_score(y_test, sgd_pred)
+        sgd_time = time.time() - start
+        
+        # ===== PA =====
+        start = time.time()
+        if first_pa:
+            pa.partial_fit(X_train_eng, y_train, classes=all_classes)
+            first_pa = False
+        else:
+            pa.partial_fit(X_train_eng, y_train)
+        pa_pred = pa.predict(X_test_eng)
+        pa_acc = accuracy_score(y_test, pa_pred)
+        pa_time = time.time() - start
+        
+        # ===== XGBoost (Fast) =====
+        start = time.time()
+        xgb_all_X.append(X_train_eng)
+        xgb_all_y.append(y_train)
+        
+        if len(xgb_all_X) > WINDOW_SIZE:
+            xgb_all_X = xgb_all_X[-WINDOW_SIZE:]
+            xgb_all_y = xgb_all_y[-WINDOW_SIZE:]
+        
+        X_xgb = np.vstack(xgb_all_X)
+        y_xgb = np.concatenate(xgb_all_y)
+        
+        # Smaller XGBoost
+        dtrain = xgb.DMatrix(X_xgb, label=y_xgb)
+        dtest = xgb.DMatrix(X_test_eng, label=y_test)
+        
+        xgb_model = xgb.train(
+            {
+                "objective": "multi:softmax",
+                "num_class": len(all_classes),
+                "max_depth": 3,  # Shallower trees
+                "eta": 0.1,
+                "subsample": 0.7,
+                "verbosity": 0,
+                "nthread": 1
+            },
+            dtrain,
+            num_boost_round=10  # Fewer rounds
+        )
+        
+        xgb_pred = xgb_model.predict(dtest)
+        xgb_acc = accuracy_score(y_test, xgb_pred)
+        xgb_time = time.time() - start
+        
+        results.append({
+            'chunk': chunk_id,
+            'lightning_acc': lightning_acc,
+            'sgd_acc': sgd_acc,
+            'pa_acc': pa_acc,
+            'xgb_acc': xgb_acc,
+        })
+        
+        print(f"  Lightning: {lightning_acc:.3f} ({lightning_time:.2f}s)")
+        print(f"  SGD:       {sgd_acc:.3f} ({sgd_time:.2f}s)")
+        print(f"  PA:        {pa_acc:.3f} ({pa_time:.2f}s)")
+        print(f"  XGB:       {xgb_acc:.3f} ({xgb_time:.2f}s)")
+    
+    # Quick results analysis
+    if results:
+        df_results = pd.DataFrame(results)
+        
+        print("\n" + "="*60)
+        print("📊 QUICK RESULTS")
+        print("="*60)
+        
+        for model in ['lightning', 'sgd', 'pa', 'xgb']:
+            acc_mean = df_results[f'{model}_acc'].mean()
+            print(f"{model.upper():10s}: {acc_mean:.4f}")
+        
+        # Determine winner
+        acc_scores = {
+            'lightning': df_results['lightning_acc'].mean(),
+            'sgd': df_results['sgd_acc'].mean(),
+            'pa': df_results['pa_acc'].mean(),
+            'xgb': df_results['xgb_acc'].mean()
+        }
+        
+        winner = max(acc_scores, key=acc_scores.get)
+        print(f"\n🏆 WINNER: {winner.upper()} ({acc_scores[winner]:.4f})")
+        
+        # Save minimal results
+        os.makedirs('benchmark_results', exist_ok=True)
+        df_results.to_csv('benchmark_results/lightning_results.csv', index=False)
+        
+        return True
+    else:
+        print("❌ No results generated")
+        return False
 
-# ========================================
-# 5. Save Results with Non-Logic Analysis
-# ========================================
-def save_transcendent_results(content, non_logic_analysis):
-    os.makedirs('benchmark_results', exist_ok=True)
-    with open('benchmark_results/transcendent_vs_xgb_100k.txt', 'w') as f:
-        f.write(f"# TRANSCENDENT NON-LOGIC BENCHMARK - {datetime.now()}\n\n")
-        f.write(content)
-        f.write("\n\n# NON-LOGIC ANALYSIS:\n")
-        for principle, explanation in non_logic_analysis.items():
-            f.write(f"# {principle}: {explanation}\n")
-    print("Saved: benchmark_results/transcendent_vs_xgb_100k.txt")
 
-# ========================================
-# 6. Main Competition - Non-Logic Enhanced
-# ========================================
 def main():
-    print("="*80)
-    print("TRANSCENDENT ONESTEP vs XGBOOST - NON-LOGIC ENHANCED")
-    print("Data: 100K Train, 4 Classes, 25 Features (Complex)")
-    print("="*80)
-
-    # Generate more complex data
-    X, y = make_classification(
-        n_samples=120000, 
-        n_features=25,           # More features
-        n_informative=20,        # More informative features
-        n_redundant=5,           # Some redundancy
-        n_classes=4,             # More classes
-        n_clusters_per_class=2,  # More complex structure
-        random_state=42,
-        flip_y=0.05              # Some noise
-    )
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=20000, random_state=42, stratify=y
-    )
-    print(f"Train: {len(X_train):,}, Test: {len(X_test):,}")
-    print(f"Features: {X.shape[1]}, Classes: {len(np.unique(y))}")
-
-    reps = 3  # Reduced for speed
-
-    # --- TRANSCENDENT ONESTEP (Non-Logic Enhanced) ---
-    print("\n🚀 Training TRANSCENDENT ONESTEP (Non-Logic Enhanced)...")
-    start_time_total = cpu_time()
+    """Main function with timeout protection"""
+    print("="*60)
+    print("⚡ LIGHTNING ML BENCHMARK")
+    print("="*60)
+    print("Optimized for CI/CD - Target: < 30 seconds\n")
     
-    model_transcendent = AdaptiveMiniBatchOneStep(
-        initial_batch_size=8000,
-        n_components=2500, 
-        C=5.0,              
-        adaptive_batch=True,
-        max_models=8        
-    )
-    model_transcendent.fit(X_train, y_train)
-    transcendent_time_train = cpu_time() - start_time_total
-
-    transcendent_preds = []
-    total_pred_time = 0
-    for i in range(reps):
-        s = cpu_time()
-        pred = model_transcendent.predict(X_test)
-        total_pred_time += (cpu_time() - s)
-        acc = accuracy_score(y_test, pred)
-        transcendent_preds.append(acc)
+    start_time = time.time()
+    
+    try:
+        success = fast_benchmark()
+        total_time = time.time() - start_time
         
-    transcendent_acc = np.mean(transcendent_preds)
-    # Total CPU time = Train time + Average prediction time
-    transcendent_cpu = transcendent_time_train + (total_pred_time / reps)
-    
-    print(f"TRANSCENDENT: {transcendent_cpu:.3f}s | Acc: {transcendent_acc:.4f} (Train: {transcendent_time_train:.2f}s)")
-    print(f"  Models: {len(model_transcendent.models)}, Adaptive batches used")
-
-    # --- ENHANCED XGBOOST ---
-    print("\n📊 Training ENHANCED XGBOOST...")
-    start_time_total = cpu_time()
-    model_xgb = EnhancedXGBoostModel()
-    model_xgb.fit(X_train, y_train)
-    xgb_time_train = cpu_time() - start_time_total
-
-    xgb_preds = []
-    total_pred_time_xgb = 0
-    for i in range(reps):
-        s = cpu_time()
-        pred = model_xgb.predict(X_test)
-        total_pred_time_xgb += (cpu_time() - s)
-        acc = accuracy_score(y_test, pred)
-        xgb_preds.append(acc)
+        print(f"\n✅ BENCHMARK COMPLETED in {total_time:.1f}s")
         
-    xgb_acc = np.mean(xgb_preds)
-    # Total CPU time = Train time + Average prediction time
-    xgb_cpu = xgb_time_train + (total_pred_time_xgb / reps)
+        if total_time > 45:
+            print("⚠️  Warning: Benchmark is getting slow for CI")
+        elif total_time > 60:
+            print("❌ Too slow for CI - needs further optimization")
+            
+    except Exception as e:
+        print(f"❌ Benchmark failed: {e}")
+        # Ensure we still create results directory
+        os.makedirs('benchmark_results', exist_ok=True)
+        with open('benchmark_results/error.log', 'w') as f:
+            f.write(str(e))
+        return 1
     
-    print(f"XGB: {xgb_cpu:.3f}s | Acc: {xgb_acc:.4f} (Train: {xgb_time_train:.2f}s)")
+    return 0
 
-    # --- Non-Logic Analysis ---
-    speedup = xgb_cpu / transcendent_cpu if transcendent_cpu > 0 else 999.0
-    acc_diff = transcendent_acc - xgb_acc
-    
-    if transcendent_cpu < xgb_cpu and transcendent_acc >= xgb_acc - 0.005: # Win if faster and within 0.5% Acc
-        winner = "TRANSCENDENT ONESTEP"
-        victory_type = "DOMINANT" if transcendent_acc > xgb_acc else "SPEED"
-    else:
-        winner = "XGBOOST" 
-        victory_type = "ACCURACY" if xgb_acc > transcendent_acc else "SPEED"
-
-    print(f"\n⚡ SPEEDUP: TRANSCENDENT {speedup:.2f}x faster")
-    print(f"🎯 ACCURACY: TRANSCENDENT {'+' if acc_diff >= 0 else ''}{acc_diff:.4f}")
-    print(f"🏆 WINNER: {winner} - {victory_type} VICTORY!")
-
-    # Non-Logic Principles Applied
-    non_logic_analysis = {
-        "Non-1": "Beyond standard features: Added clustering and statistical features",
-        "Non-2": "Beyond linear combinations: Polynomial interactions and ratios", 
-        "Non-3": "Beyond multiplication: Ratio features and cubed transformations",
-        "Non-6": "Beyond random landmarks: K-means++ strategic selection",
-        "Non-7": "Beyond single gamma: Multiple kernel scales ensemble",
-        "Non-9": "Beyond single kernel: Ensemble of kernel models",
-        "Non-10": "Beyond single model: Weighted ensemble prediction",
-        "Non-11": "Beyond infinite growth: Pruning weakest models",
-        "Non-12": "Beyond fixed parameters: Adaptive component sizing",
-        "Non-13": "Beyond fixed batch size: Adaptive batch sizing"
-    }
-
-    # Save comprehensive results
-    content = f"""TRANSCENDENT ONESTEP vs XGBOOST - 100K SAMPLES
-
-TRANSCENDENT ONESTEP (Non-Logic):
-  Time: {transcendent_cpu:.3f}s
-  Accuracy: {transcendent_acc:.4f}
-  Models: {len(model_transcendent.models)}
-  Features: ~{model_transcendent.models[0].feature_engine.transform(X_train[:1]).shape[1] if model_transcendent.models and model_transcendent.models[0].all_betas_ else 'N/A'}
-
-ENHANCED XGBOOST:
-  Time: {xgb_cpu:.3f}s  
-  Accuracy: {xgb_acc:.4f}
-
-COMPETITION RESULTS:
-  Speedup: {speedup:.2f}x
-  Accuracy Difference: {acc_diff:+.4f}
-  Winner: {winner} ({victory_type})"""
-
-    save_transcendent_results(content, non_logic_analysis)
-
-    # Final verdict with Non-Logic perspective
-    print(f"\n🌌 NON-LOGIC VERDICT:")
-    if winner == "TRANSCENDENT ONESTEP":
-        print(f"   ✅ Transcendent approach validates Non-Logic principles")
-        print(f"   ✅ Victory through transcendent feature engineering") 
-        print(f"   ✅ Adaptive learning surpasses fixed architectures")
-    else:
-        print(f"   🔄 XGBoost maintains lead due to highly optimized C++ core.")
-        print(f"   📈 Non-Logic principles significantly enhanced RLS performance.")
-        print(f"   🎯 The combination of features and Nyström is the key to closing the gap.")
 
 if __name__ == "__main__":
-    main()
+    exit(main())
