@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FIXED STREAMING BENCHMARK v12
-Fixes:
-1. Correct speed ratio calculation and interpretation
-2. Better dataset handling (minimum batch requirements)
-3. More meaningful final test evaluation
-4. Clear separation of training time vs prediction quality
+CRITICALLY FIXED STREAMING BENCHMARK v13
+Critical Fix: Pre-define all classes for SGD before streaming starts
 """
 
 import os
@@ -27,10 +23,14 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class StreamingEnsemble:
-    def __init__(self, master_scaler, window_size=1500, update_interval=500):
+    def __init__(self, master_scaler, all_classes, window_size=1500, update_interval=500):
+        """
+        CRITICAL FIX: Requires all_classes upfront to avoid missing class issue
+        """
         self.window_size = window_size
         self.update_interval = update_interval
         self.scaler = master_scaler
+        self.all_classes = np.array(all_classes)  # CRITICAL FIX
         
         self.sgd = SGDClassifier(
             loss='modified_huber', penalty='l2', alpha=0.005, 
@@ -72,8 +72,9 @@ class StreamingEnsemble:
         if self.sample_count % self.update_interval == 0 or not self.is_fitted:
             update_needed = True
 
+        # CRITICAL FIX: Use pre-defined all_classes instead of np.unique(buffer)
         X_scaled_new = self.scaler.transform(X_new)
-        self.sgd.partial_fit(X_scaled_new, y_new, classes=np.unique(self.y_buffer))
+        self.sgd.partial_fit(X_scaled_new, y_new, classes=self.all_classes)
         
         if update_needed:
             X_scaled_window = self.scaler.transform(X_window)
@@ -96,7 +97,12 @@ class StreamingEnsemble:
             sgd_proba = self.sgd.predict_proba(X_scaled)
         else:
             dec_func = self.sgd.decision_function(X_scaled)
-            sgd_proba = np.vstack([1 - dec_func, dec_func]).T
+            if len(self.all_classes) == 2:
+                sgd_proba = np.vstack([1 - dec_func, dec_func]).T
+            else:
+                # Multi-class: normalize decision function
+                exp_dec = np.exp(dec_func - np.max(dec_func, axis=1, keepdims=True))
+                sgd_proba = exp_dec / np.sum(exp_dec, axis=1, keepdims=True)
         
         if hasattr(self.rf, 'estimators_') and len(self.rf.estimators_) > 0:
             try:
@@ -199,7 +205,7 @@ class StreamingXGBoost:
         return acc
 
 def streaming_benchmark():
-    print("🚀 FIXED STREAMING BENCHMARK v12")
+    print("🚀 CRITICALLY FIXED STREAMING BENCHMARK v13")
     print("=" * 70)
     
     from sklearn.datasets import load_breast_cancer, load_iris, load_wine
@@ -225,6 +231,10 @@ def streaming_benchmark():
         
         X, y = data.data, data.target
         
+        # CRITICAL: Get all classes upfront
+        all_classes = np.unique(y)
+        print(f"Classes: {all_classes}")
+        
         X_train_full, X_test, y_train_full, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
@@ -238,12 +248,22 @@ def streaming_benchmark():
         master_scaler = StandardScaler()
         master_scaler.fit(X_train_full) 
         
-        batch_size = 30  # Smaller batch for more updates
-        n_batches = max(10, len(X_train) // batch_size)  # Ensure minimum batches
+        batch_size = 30
+        n_batches = max(10, len(X_train) // batch_size)
         print(f"Number of batches: {n_batches}")
         
-        stream_ensemble = StreamingEnsemble(master_scaler=master_scaler, window_size=1500, update_interval=200)
-        xgboost_stream = StreamingXGBoost(master_scaler=master_scaler, update_interval=200, window_size=1500)
+        # CRITICAL FIX: Pass all_classes to StreamingEnsemble
+        stream_ensemble = StreamingEnsemble(
+            master_scaler=master_scaler, 
+            all_classes=all_classes,  # <-- CRITICAL FIX
+            window_size=1500, 
+            update_interval=200
+        )
+        xgboost_stream = StreamingXGBoost(
+            master_scaler=master_scaler, 
+            update_interval=200, 
+            window_size=1500
+        )
         
         for batch_idx in range(n_batches):
             start_idx = batch_idx * batch_size
@@ -282,8 +302,8 @@ def streaming_benchmark():
     print("🏆 FINAL RESULTS")
     print(f"{'='*70}")
     
-    ensemble_avg_time = np.mean(streaming_times['StreamingEnsemble']) * 1000  # ms
-    xgb_avg_time = np.mean(streaming_times['XGBoostIncremental']) * 1000  # ms
+    ensemble_avg_time = np.mean(streaming_times['StreamingEnsemble']) * 1000
+    xgb_avg_time = np.mean(streaming_times['XGBoostIncremental']) * 1000
     
     ensemble_final_acc = np.mean(final_test_accuracies['StreamingEnsemble'])
     xgb_final_acc = np.mean(final_test_accuracies['XGBoostIncremental'])
@@ -296,21 +316,33 @@ def streaming_benchmark():
     print(f"  Streaming Ensemble: {ensemble_final_acc:.4f}")
     print(f"  XGBoost Incremental: {xgb_final_acc:.4f}")
     
-    # FIXED: Correct speed comparison
+    # Correct interpretation
     if ensemble_avg_time < xgb_avg_time:
         speedup = xgb_avg_time / ensemble_avg_time
-        print(f"\n⚡ Speed: Streaming Ensemble is {speedup:.2f}x FASTER")
+        speed_winner = "Streaming Ensemble"
+        print(f"\n⚡ Speed Winner: {speed_winner} is {speedup:.2f}x FASTER")
     else:
         speedup = ensemble_avg_time / xgb_avg_time
-        print(f"\n⚡ Speed: XGBoost is {speedup:.2f}x FASTER")
+        speed_winner = "XGBoost"
+        print(f"\n⚡ Speed Winner: {speed_winner} is {speedup:.2f}x FASTER")
     
     acc_diff = abs(ensemble_final_acc - xgb_final_acc)
-    if acc_diff < 0.01:
+    if acc_diff < 0.02:
+        acc_winner = "TIE"
         print(f"🤝 Accuracy: Comparable (diff={acc_diff:.4f})")
     elif ensemble_final_acc > xgb_final_acc:
-        print(f"📈 Accuracy: Streaming Ensemble wins by {acc_diff:.4f}")
+        acc_winner = "Streaming Ensemble"
+        print(f"📈 Accuracy Winner: {acc_winner} (+{acc_diff:.4f})")
     else:
-        print(f"📈 Accuracy: XGBoost wins by {acc_diff:.4f}")
+        acc_winner = "XGBoost"
+        print(f"📈 Accuracy Winner: {acc_winner} (+{acc_diff:.4f})")
+    
+    print(f"\n{'='*70}")
+    if speed_winner == acc_winner or acc_winner == "TIE":
+        print(f"🏆 OVERALL WINNER: {speed_winner}")
+    else:
+        print(f"⚖️  TRADE-OFF: {speed_winner} (speed) vs {acc_winner} (accuracy)")
+    print(f"{'='*70}")
 
 
 if __name__ == "__main__":
